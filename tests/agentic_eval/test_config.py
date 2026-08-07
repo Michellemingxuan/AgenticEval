@@ -297,31 +297,35 @@ def test_no_shipped_config_pins_a_machine_specific_path():
     assert not offenders, offenders
 
 
-def test_safechain_adapts_to_the_one_call_the_judge_makes():
-    """The private gateway is a transport swap, not a second code path.
+def test_safechain_binds_json_mode_and_runs_through_ainvoke():
+    """The private gateway is a transport swap, not a second judging path.
 
-    Both backends present `.chat.completions.create`, so `complete_json` is
-    written against that and knows nothing else about either.
+    Everything underneath is async — `amodel()` acquires a token over the
+    network — so the client owns the sync bridge and the judge stays
+    synchronous.
     """
     from types import SimpleNamespace
     from agentic_eval.llm_judge import SafeChainClient
 
-    bound_with = {}
+    seen = {}
 
-    class FakeModel:
-        def bind(self, **kwargs):
-            bound_with.update(kwargs)
-            return self
-
-        def invoke(self, messages):
-            assert messages[0][0] == "system" and messages[1][0] == "user"
+    class FakeChain:
+        async def ainvoke(self, payload):
+            seen["payload"] = payload
             return SimpleNamespace(
                 content='{"claims": []}',
                 usage_metadata={"input_tokens": 11, "output_tokens": 2,
                                 "total_tokens": 13},
             )
 
-    reply = SafeChainClient(FakeModel()).chat.completions.create(
+    class FakeModel:
+        def bind(self, **kwargs):
+            seen["bound"] = kwargs
+            return FakeChain()
+
+    client = SafeChainClient("gpt-4.1", timeout_s=60.0)
+    client._llm = FakeModel()                       # skip the network build
+    reply = client.chat.completions.create(
         model="gpt-4.1",
         messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
         response_format={"type": "json_object"},
@@ -331,15 +335,17 @@ def test_safechain_adapts_to_the_one_call_the_judge_makes():
     # JSON mode must reach the endpoint. SafeChain binds `response_format` onto
     # the model and forwards it unchanged; an adapter that swallowed it would
     # leave the judge relying on prompt wording alone.
-    assert bound_with == {"response_format": {"type": "json_object"}}
+    assert seen["bound"] == {"response_format": {"type": "json_object"}}
+    assert seen["payload"] == [("system", "s"), ("user", "u")]
 
 
-def test_an_absent_safechain_says_which_environment_it_needs(monkeypatch):
+def test_an_absent_safechain_says_which_environment_it_needs():
+    """Built lazily, so the message arrives on use rather than on construction."""
     import pytest
     from agentic_eval.llm_judge import build_client
-    monkeypatch.setitem(__import__("sys").modules, "safechain.lc_factory", None)
+    client = build_client({"model": "gpt-4.1"}, "safechain", 60.0)
     with pytest.raises(RuntimeError, match="private environment"):
-        build_client({"model": "gpt-4.1"}, "safechain", 60.0)
+        client.chat.completions.create(model="gpt-4.1", messages=[])
 
 
 def test_an_unknown_backend_is_rejected_by_name():

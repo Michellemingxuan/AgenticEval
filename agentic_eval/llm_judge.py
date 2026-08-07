@@ -1,11 +1,22 @@
 """Pinned JSON-mode LLM judge client, independent of either target system."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+
+# SafeChain's token helper bridges sync->async with `asyncio.run(...)` on its
+# own path, which raises inside a running loop. Patching here means the judge
+# can stay synchronous. Absent in dev, where it is not needed.
+try:  # pragma: no cover - private environment only
+    import nest_asyncio as _nest_asyncio
+
+    _nest_asyncio.apply()
+except ImportError:
+    _nest_asyncio = None
 from typing import Any, Protocol
 
 
@@ -47,15 +58,9 @@ def build_client(config: dict[str, Any], backend: str, timeout_s: float) -> Any:
         return OpenAI(**kwargs)
 
     if backend == "safechain":
-        try:
-            from safechain.lc_factory import get_model  # type: ignore[import-not-found]
-        except ImportError as exc:  # pragma: no cover - private environment only
-            raise RuntimeError(
-                "backend: safechain needs the `safechain` package, which only "
-                "exists in the private environment. Use backend: openai here, "
-                "or set LLM_BACKEND=openai."
-            ) from exc
-        return SafeChainClient(get_model(str(config.get("model") or "gpt-4.1")))
+        return SafeChainClient(
+            str(config.get("model") or "gpt-4.1"), timeout_s=timeout_s,
+        )
 
     raise ValueError(
         f"unknown judge backend {backend!r}; use 'openai', 'openai_compatible' "
@@ -64,20 +69,34 @@ def build_client(config: dict[str, Any], backend: str, timeout_s: float) -> Any:
 
 
 class SafeChainClient:
-    """Adapts a SafeChain LCEL model to the one call this judge makes.
+    """Adapts SafeChain to the one call this judge makes.
 
     Only `chat.completions.create` is supported, because that is all the judge
     uses — anything else should fail loudly rather than appear to work.
 
-    JSON mode is real here, not hoped for: SafeChain binds `response_format`
-    onto the LCEL model and forwards it unchanged to the endpoint, the same
-    way the OpenAI SDK does. Dropping it — as an earlier version of this
-    adapter did by swallowing kwargs — would have left the judge relying on
-    "Return JSON only" in the prompt and raising on the first prose reply.
+    Everything underneath is ASYNC, mirroring AgenticSys_v2's client:
+
+      * `safechain.core.model.amodel()` is an async factory — it acquires a
+        token over the network — so the build is awaited and bounded. An
+        unbounded build hangs the whole run with no timeout, since a per-call
+        timeout only wraps the invoke.
+      * the chain is `ValidChatPromptTemplate | model.bind(...)` and runs via
+        `ainvoke`. The template stays in the chain for COMPLIANCE: its
+        `format_prompt` override is template-time and a bare `ainvoke(messages)`
+        would skip it.
+      * `response_format` is bound, so JSON mode reaches the endpoint exactly
+        as it does on the OpenAI SDK path.
+
+    The judge itself is synchronous, so this owns the bridge: one `asyncio.run`
+    per call, with `nest_asyncio` applied at import because SafeChain's own
+    token helper bridges sync->async the same way and would otherwise raise
+    "asyncio.run() cannot be called from a running event loop".
     """
 
-    def __init__(self, model: Any) -> None:
-        self._model = model
+    def __init__(self, model_name: str, *, timeout_s: float) -> None:
+        self._model_name = model_name
+        self._timeout_s = timeout_s
+        self._llm: Any = None            # built on first use, then cached
         self.chat = self
 
     @property
@@ -88,13 +107,7 @@ class SafeChainClient:
         self, *, model: str, messages: list[dict[str, Any]],
         response_format: Any = None, **kwargs: Any,
     ) -> Any:
-        bound = (
-            self._model.bind(response_format=response_format)
-            if response_format is not None else self._model
-        )
-        reply = bound.invoke([
-            (str(m.get("role")), str(m.get("content"))) for m in messages
-        ])
+        reply = asyncio.run(self._acreate(messages, response_format))
         usage = getattr(reply, "usage_metadata", None) or {}
         return SimpleNamespace(
             choices=[SimpleNamespace(
@@ -105,6 +118,53 @@ class SafeChainClient:
                 completion_tokens=usage.get("output_tokens"),
                 total_tokens=usage.get("total_tokens"),
             ),
+        )
+
+    async def _amodel(self) -> Any:
+        """Build once, awaited and bounded. `amodel()` does token acquisition."""
+        if self._llm is not None:
+            return self._llm
+        try:
+            from safechain.core.model import amodel  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - private environment only
+            raise RuntimeError(
+                "backend: safechain needs the `safechain` package, which only "
+                "exists in the private environment. Use backend: openai here, "
+                "or set LLM_BACKEND=openai."
+            ) from exc
+        model_id = os.environ.get("SAFECHAIN_MODEL", self._model_name)
+        try:
+            self._llm = await asyncio.wait_for(
+                amodel(model_id), timeout=self._timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"safechain amodel() build did not return within {self._timeout_s:.0f}s"
+            ) from exc
+        return self._llm
+
+    async def _acreate(
+        self, messages: list[dict[str, Any]], response_format: Any,
+    ) -> Any:
+        model = await self._amodel()
+        bound = (
+            model.bind(response_format=response_format)
+            if response_format is not None else model
+        )
+        try:
+            from safechain.prompts import ValidChatPromptTemplate  # type: ignore[import-not-found]
+            from langchain_core.prompts import MessagesPlaceholder  # type: ignore[import-not-found]
+        except ImportError:  # pragma: no cover - private environment only
+            chain = bound
+        else:
+            chain = ValidChatPromptTemplate.from_messages(
+                [MessagesPlaceholder("messages")],
+            ) | bound
+        payload = [(str(m.get("role")), str(m.get("content"))) for m in messages]
+        return await asyncio.wait_for(
+            chain.ainvoke({"messages": payload}) if chain is not bound
+            else chain.ainvoke(payload),
+            timeout=self._timeout_s,
         )
 
 
