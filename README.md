@@ -313,6 +313,14 @@ bin/compare --config experiments/configs/series_abc.yaml \
 | `--baseline-cwd` / `--candidate-cwd` | which two checkouts are compared |
 | `--env-file` | where `OPENAI_API_KEY` is read from |
 
+The system under test needs an interpreter carrying its own dependencies. Point
+`AGENTIC_SYS_PYTHON` at it — the configs fall back to `python3`, which only
+works if that already has them:
+
+```bash
+export AGENTIC_SYS_PYTHON=~/.pyenv/versions/3.11.13/envs/autoAI/bin/python
+```
+
 Anything not passed falls back to the config. Names are validated *before*
 either system starts, so a typo costs a second rather than a ten-minute run —
 `agentic-eval validate --config <cfg> --question <name>` prints the plan alone.

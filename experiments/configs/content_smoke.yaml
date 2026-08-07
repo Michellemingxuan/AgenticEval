@@ -5,8 +5,10 @@ version: 1
 # branch baseline-v0.1.3. Candidate = the live AgenticSys_v2 working tree.
 # HEAD is 112 commits / 234 files past the baseline.
 #
-# NOTE: `python` must be the pyenv autoAI virtualenv. The base 3.11.13 lacks
-# matplotlib, which fails the server at import time.
+# The system under test needs an interpreter with its own dependencies —
+# the base 3.11.13 lacks matplotlib and fails the server at import time.
+# Set AGENTIC_SYS_PYTHON to it; the fallback below only works if `python3`
+# already has them.
 
 experiment:
   name: agenticsys_content_smoke
@@ -48,7 +50,7 @@ systems:
     process:
       # Relative paths resolve from this YAML file, not the shell's CWD.
       cwd: ../../../AgenticSys_20260611
-      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      command: ["${AGENTIC_SYS_PYTHON:-python3}", server.py]
       startup_timeout_s: 240
       env:
         PORT: "49102"
@@ -65,7 +67,7 @@ systems:
     adapter: agenticsys_sse
     process:
       cwd: ../../../AgenticSys_v2
-      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      command: ["${AGENTIC_SYS_PYTHON:-python3}", server.py]
       startup_timeout_s: 240
       env:
         PORT: "49202"

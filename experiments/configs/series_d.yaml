@@ -3,8 +3,10 @@ version: 1
 # Simple-question suite: every question has Python-computable ground truth, so
 # correctness is settled by `oracles/case_facts.py` rather than by a judge.
 #
-# NOTE: `python` must be the pyenv autoAI virtualenv. The base 3.11.13 lacks
-# matplotlib, which fails the server at import time.
+# The system under test needs an interpreter with its own dependencies —
+# the base 3.11.13 lacks matplotlib and fails the server at import time.
+# Set AGENTIC_SYS_PYTHON to it; the fallback below only works if `python3`
+# already has them.
 
 experiment:
   name: agenticsys_series_d
@@ -63,7 +65,7 @@ systems:
     process:
       # Relative paths resolve from this YAML file, not the shell's CWD.
       cwd: ../../../AgenticSys_20260608
-      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      command: ["${AGENTIC_SYS_PYTHON:-python3}", server.py]
       startup_timeout_s: 240
       env:
         PORT: "49102"
@@ -80,7 +82,7 @@ systems:
     adapter: agenticsys_sse
     process:
       cwd: ../../../AgenticSys_v2
-      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      command: ["${AGENTIC_SYS_PYTHON:-python3}", server.py]
       startup_timeout_s: 240
       env:
         PORT: "49202"

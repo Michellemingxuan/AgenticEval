@@ -263,3 +263,34 @@ def test_must_haves_carry_no_hand_set_weights():
     for question in config.questions:
         for point in question.evaluation.get("must_have_points") or []:
             assert "weight" not in point, f"{question.name}:{point.get('id')}"
+
+
+def test_config_command_resolves_an_interpreter_from_the_environment(monkeypatch):
+    """A config must not pin one machine's Python.
+
+    Every shipped config hardcoded `/Users/<someone>/.pyenv/.../bin/python`,
+    which is correct on one laptop and a "command not found" everywhere else.
+    """
+    from agentic_eval.process import expand
+    monkeypatch.delenv("AGENTIC_SYS_PYTHON", raising=False)
+    assert expand("${AGENTIC_SYS_PYTHON:-python3}") == "python3"
+    monkeypatch.setenv("AGENTIC_SYS_PYTHON", "/opt/venv/bin/python")
+    assert expand("${AGENTIC_SYS_PYTHON:-python3}") == "/opt/venv/bin/python"
+
+
+def test_an_unset_variable_with_no_fallback_is_an_error(monkeypatch):
+    """Silently dropping it would fail later, further away, about the wrong thing."""
+    import pytest
+    from agentic_eval.process import expand
+    monkeypatch.delenv("NO_SUCH_VAR", raising=False)
+    with pytest.raises(KeyError, match="NO_SUCH_VAR"):
+        expand("${NO_SUCH_VAR}")
+
+
+def test_no_shipped_config_pins_a_machine_specific_path():
+    import pathlib
+    offenders = [
+        str(p) for p in pathlib.Path("experiments").rglob("*.yaml")
+        if "/Users/" in p.read_text() or "/home/" in p.read_text()
+    ]
+    assert not offenders, offenders

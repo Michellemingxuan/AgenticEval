@@ -2,10 +2,38 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+
+
+#: `${VAR}` and `${VAR:-fallback}`, so a config can name an interpreter without
+#: hardcoding one machine's path. Without this every config pinned
+#: `/Users/<someone>/.pyenv/versions/.../bin/python`, which is correct on
+#: exactly one laptop and a silent "command not found" everywhere else.
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z_0-9]*)(?::-([^}]*))?\}")
+
+
+def expand(value: Any) -> str:
+    """Resolve environment references in a config string.
+
+    An unset variable with no fallback is an error rather than an empty
+    string: a command that silently loses its interpreter fails later and
+    further away, with a message about the wrong thing.
+    """
+    def sub(match: re.Match[str]) -> str:
+        name, fallback = match.group(1), match.group(2)
+        resolved = os.environ.get(name) or fallback
+        if resolved is None:
+            raise KeyError(
+                f"{name} is not set and has no fallback; write "
+                f"${{{name}:-<default>}} or export it"
+            )
+        return resolved
+    return os.path.expanduser(_VAR.sub(sub, str(value)))
 
 
 class ManagedProcess:
@@ -17,8 +45,8 @@ class ManagedProcess:
         self._log_handle = None
 
     def start(self, healthcheck: Callable[[], None]) -> None:
-        command = [str(item) for item in self.config["command"]]
-        cwd = str(self.config.get("cwd") or ".")
+        command = [expand(item) for item in self.config["command"]]
+        cwd = expand(self.config.get("cwd") or ".")
         log_path = Path(
             self.config.get("stdout")
             or self.output_dir / "logs" / f"{self.name}.server.log"
@@ -26,7 +54,9 @@ class ManagedProcess:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = log_path.open("ab")
         env = os.environ.copy()
-        env.update({str(k): str(v) for k, v in (self.config.get("env") or {}).items()})
+        env.update({
+            str(k): expand(v) for k, v in (self.config.get("env") or {}).items()
+        })
         self.process = subprocess.Popen(
             command,
             cwd=cwd,
