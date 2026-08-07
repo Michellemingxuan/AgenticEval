@@ -69,9 +69,11 @@ class SafeChainClient:
     Only `chat.completions.create` is supported, because that is all the judge
     uses — anything else should fail loudly rather than appear to work.
 
-    A gateway that cannot constrain output to JSON still round-trips: every
-    task prompt ends with "Return JSON only", and `complete_json` raises on a
-    non-object, so a violation is loud rather than silently scored as empty.
+    JSON mode is real here, not hoped for: SafeChain binds `response_format`
+    onto the LCEL model and forwards it unchanged to the endpoint, the same
+    way the OpenAI SDK does. Dropping it — as an earlier version of this
+    adapter did by swallowing kwargs — would have left the judge relying on
+    "Return JSON only" in the prompt and raising on the first prose reply.
     """
 
     def __init__(self, model: Any) -> None:
@@ -83,9 +85,14 @@ class SafeChainClient:
         return self
 
     def create(
-        self, *, model: str, messages: list[dict[str, Any]], **kwargs: Any,
+        self, *, model: str, messages: list[dict[str, Any]],
+        response_format: Any = None, **kwargs: Any,
     ) -> Any:
-        reply = self._model.invoke([
+        bound = (
+            self._model.bind(response_format=response_format)
+            if response_format is not None else self._model
+        )
+        reply = bound.invoke([
             (str(m.get("role")), str(m.get("content"))) for m in messages
         ])
         usage = getattr(reply, "usage_metadata", None) or {}

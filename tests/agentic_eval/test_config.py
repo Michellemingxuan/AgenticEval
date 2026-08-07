@@ -306,7 +306,13 @@ def test_safechain_adapts_to_the_one_call_the_judge_makes():
     from types import SimpleNamespace
     from agentic_eval.llm_judge import SafeChainClient
 
+    bound_with = {}
+
     class FakeModel:
+        def bind(self, **kwargs):
+            bound_with.update(kwargs)
+            return self
+
         def invoke(self, messages):
             assert messages[0][0] == "system" and messages[1][0] == "user"
             return SimpleNamespace(
@@ -322,6 +328,10 @@ def test_safechain_adapts_to_the_one_call_the_judge_makes():
     )
     assert reply.choices[0].message.content == '{"claims": []}'
     assert reply.usage.prompt_tokens == 11 and reply.usage.total_tokens == 13
+    # JSON mode must reach the endpoint. SafeChain binds `response_format` onto
+    # the model and forwards it unchanged; an adapter that swallowed it would
+    # leave the judge relying on prompt wording alone.
+    assert bound_with == {"response_format": {"type": "json_object"}}
 
 
 def test_an_absent_safechain_says_which_environment_it_needs(monkeypatch):

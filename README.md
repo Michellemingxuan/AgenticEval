@@ -323,7 +323,8 @@ export AGENTIC_SYS_PYTHON=~/.pyenv/versions/3.11.13/envs/autoAI/bin/python
 
 The judge is separate from the systems under test and has two transports:
 `openai` (default) and `safechain` for the private environment. Both present
-`.chat.completions.create`, so the judging code is identical either way — set
+`.chat.completions.create` and both honour `response_format`, so JSON mode and
+the judging code are identical either way — set
 `content_evaluation.llm.backend`, or `LLM_BACKEND=safechain`. SafeChain is
 constructed by AgenticEval rather than borrowed from the system being
 evaluated: a judge is not independent if a change to its subject can change it.
