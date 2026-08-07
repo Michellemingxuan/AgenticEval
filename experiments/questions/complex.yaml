@@ -1,0 +1,223 @@
+version: 1
+
+# The complex half of the case suite: questions no single script can settle.
+#
+# Where `simple.yaml` scores on an oracle, these score on `must_have_points`
+# (did the answer cover what an analyst needs?) and `logic_expectations` (does
+# the reasoning hold?). Both are judged, so both are softer than an oracle —
+# which is why `case_overview` still carries expected_answers for the parts
+# that ARE computable. Where a script can decide, it decides.
+#
+# A must-have is `id` + `description`, and nothing else — the description is
+# what reaches the judge, so a requirement that matters has to be written into
+# it.
+#
+# Asked in this order in a stateful session. Questions 4 and 5 are follow-ups:
+# "the recent reaction" and "when TSR was reacting" have no referent until
+# question 3 has been asked, so they are marked memory_required and will read
+# as failures in cold mode by construction.
+
+questions:
+  - name: case_overview
+    question: "What is this case about?"
+    evaluation:
+      # The overview names figures a script can check, so check them rather
+      # than asking a judge whether they looked right.
+      expected_answers:
+        - id: commercial_card_count
+          description: "Cards in the small-business (SBS) portfolio."
+          command: [python3, oracles/case_facts.py, --fact, commercial_card_count]
+          tolerance: 0
+          critical: true
+        - id: payment_return_count
+          description: "Payments flagged as returned."
+          command: [python3, oracles/case_facts.py, --fact, payment_return_count]
+          tolerance: 0
+          critical: true
+      must_have_points:
+        - id: mh_card_portfolio
+          description: >-
+            Describe the card portfolio: how many cards, which are commercial
+            (SBS) versus consumer (CPS), and their balances.
+          evidence_requirement: row_level
+        - id: mh_returned_payments
+          description: >-
+            State the number of returned payments, grounded in the payments
+            table rather than a curated report.
+          evidence_requirement: traced_number
+        - id: mh_successful_payments
+          description: >-
+            State the total successful payments — the count, the amount, or
+            both.
+          evidence_requirement: traced_number
+
+  - name: spending_spikes_drivers
+    question: "Any spending spikes? What are the drivers for it?"
+    evaluation:
+      must_have_points:
+        - id: mh_spike_identified
+          description: >-
+            Identify whether a spending spike occurred, and date it to a
+            specific month or window.
+          evidence_requirement: traced_number
+        - id: mh_spike_magnitude
+          description: >-
+            Quantify the spike against a baseline — a level and what it rose
+            from, not "a sharp increase" alone.
+          evidence_requirement: traced_number
+        - id: mh_drivers_named
+          description: >-
+            Name the drivers behind the spike (merchants, categories, or
+            driver columns), not just that drivers exist.
+          evidence_requirement: row_level
+
+  - name: tsr_cdss_bureau_reaction
+    question: >-
+      In this case, how did TSR and CDSS react? While the TSR and CDSS were
+      reacting in 2025/2026, how was the bureau profile?
+    evaluation:
+      must_have_points:
+        - id: mh_tsr_trajectory
+          description: >-
+            State the TSR trajectory with dated values, including its peak.
+        - id: mh_cdss_trajectory
+          description: >-
+            State the CDSS trajectory, including whether it crossed its risky
+            threshold.
+        - id: mh_bureau_trajectory
+          description: >-
+            Describe the bureau profile over the SAME window the scores were
+            reacting in — not merely the latest bureau value.
+
+  # "the recent reaction" refers to the previous answer. Asked cold it has no
+  # referent, so this measures memory as much as content.
+  - name: tsr_cdss_before_after
+    question: >-
+      What are the differences before and after the recent reaction of TSR and
+      CDSS? Any changes regarding spending patterns, model drivers?
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: tsr_cdss_bureau_reaction
+    evaluation:
+      must_have_points:
+        - id: mh_window_split
+          description: >-
+            Define the before and after windows explicitly, anchored to the
+            reaction identified in the previous turn.
+        - id: mh_spending_change
+          description: >-
+            Compare spending patterns across the two windows with figures for
+            each side.
+        - id: mh_driver_change
+          description: >-
+            Say which model drivers changed rank or value between the windows.
+
+  - name: abnormal_transactions_during_reaction
+    question: >-
+      Summarize the abnormal transactions when TSR was reacting in 2025/2026.
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: tsr_cdss_bureau_reaction
+    evaluation:
+      must_have_points:
+        - id: mh_named_merchants
+          description: >-
+            Name the specific abnormal merchants, not a category or a count
+            alone.
+        - id: mh_connected_transactions
+          description: >-
+            Link the transactions to each other — repeats at one merchant,
+            a cluster in time, or a chain
+        - id: mh_window_is_the_reaction
+          description: >-
+            Restrict the summary to the period when TSR was reacting, and say
+            what that period is.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Show the analysis actually reached individual TRANSACTIONS. That
+            means identifying specific rows — a date, a merchant and an amount
+            together — or counting the rows that meet a stated row-level
+            criterion. A per-merchant or per-month TOTAL is an aggregate
+            computed over transactions, not transaction-level evidence, and a
+            figure quoted from a curated report is neither.
+
+  # The interpretation chain. `abnormal_transactions_during_reaction` surfaces
+  # WHAT happened; this asks what it means, and the two follow-ups ask the
+  # answer to argue both sides of its own reading.
+  - name: connected_transaction_pattern
+    question: >-
+      What transactions are connected? Is there a default pattern? Is the
+      behaviour intentional, accidental or explainable?
+    evaluation:
+      must_have_points:
+        - id: mh_connection_stated
+          description: >-
+            Say what connects the transactions — shared merchant, timing,
+            amount structure, or sequence — not merely that they are related.
+        - id: mh_default_pattern
+          description: >-
+            Answer whether the behaviour matches a default pattern, and say
+            which observable features do or do not fit it.
+        - id: mh_intent_verdict
+          description: >-
+            Commit to intentional, accidental or explainable — and give the
+            reasoning, rather than listing the three and declining to choose.
+        - id: mh_uncertainty_declared
+          description: >-
+            State what would be needed to settle the reading, given the data
+            available cannot prove intent.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Show the analysis actually reached individual TRANSACTIONS. That
+            means identifying specific rows — a date, a merchant and an amount
+            together — or counting the rows that meet a stated row-level
+            criterion. A per-merchant or per-industry TOTAL is an aggregate
+            computed over transactions, not transaction-level evidence, and a
+            figure quoted from a curated report is neither.
+
+  - name: evidence_supporting_pattern
+    question: "What evidence supports it?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: connected_transaction_pattern
+    evaluation:
+      must_have_points:
+        - id: mh_support_is_cited
+          description: >-
+            Cite specific rows, figures or periods, not a restatement of the
+            reading it is meant to support.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Ground the evidence in individual TRANSACTIONS: specific rows given
+            with date, merchant and amount, or a count of rows meeting a stated
+            criterion. A monthly or per-merchant total is an aggregate over
+            transactions, and a figure quoted from a curated report is not an
+            observation of the data at all.
+
+  - name: evidence_contradicting_pattern
+    question: "What evidence contradicts it?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: connected_transaction_pattern
+    evaluation:
+      must_have_points:
+        - id: mh_contradiction_offered
+          description: >-
+            Offer at least one genuine counter-observation. "No contradicting
+            evidence" is only acceptable if the answer says what it looked for
+            and where.
+        - id: mh_weighs_against_support
+          description: >-
+            Say how the counter-evidence changes confidence in the reading —
+            weakened, unchanged, or overturned.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Ground the evidence in individual TRANSACTIONS: specific rows given
+            with date, merchant and amount, or a count of rows meeting a stated
+            criterion. A monthly or per-merchant total is an aggregate over
+            transactions, and a figure quoted from a curated report is not an
+            observation of the data at all.

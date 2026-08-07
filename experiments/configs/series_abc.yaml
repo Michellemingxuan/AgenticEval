@@ -1,0 +1,95 @@
+version: 1
+
+# Simple-question suite: every question has Python-computable ground truth, so
+# correctness is settled by `oracles/case_facts.py` rather than by a judge.
+#
+# NOTE: `python` must be the pyenv autoAI virtualenv. The base 3.11.13 lacks
+# matplotlib, which fails the server at import time.
+
+experiment:
+  name: agenticsys_series_abc
+  baseline: previous
+  candidate: current
+  # Stateful: one session per repeat, questions share history. Cold resets
+  # before every turn, which makes any follow-up question unanswerable by
+  # construction and measures nothing about memory.
+  mode: stateful
+  repeats: 3
+  timeout_s: 600
+  seed: 20260802
+  output_dir: ../results
+
+# Owned by AgenticEval, not by the system under test. Both halves of the
+# suite, asked in one session: simple questions a script can settle, then
+# complex ones only a rubric can. `--question` selects a subset without
+# needing a second config.
+# A, B and C in ONE stateful session, in this order: series B's follow-ups
+# ("the reacting period", "the conclusion") have no referent without the turns
+# before them. `--question` selects a subset without needing another config.
+questions_file:
+  - ../questions/series_a.yaml
+  - ../questions/series_b.yaml
+  - ../questions/series_c.yaml
+
+content_evaluation:
+  enabled: true
+  # Oracles are free and deterministic; the judge cascade is not. Run it
+  # explicitly with `evaluate-content` once runs.jsonl exists.
+  auto_run: false
+  # No `rubric_file`: questions.simple.yaml carries its own expectations
+  # inline, so question and oracle cannot drift apart.
+  # Three judge calls per answer, and no switches:
+  #
+  #   extract      the question and the answer      -> claims
+  #   evidence     claims + ledger + the run trace  -> pointers, routes, must-haves
+  #   eligibility  routes + briefs + earlier turns  -> one verdict per claim
+  #
+  # The ledger is ~13k tokens and travels exactly once. The split between the
+  # last two is the one that matters: a judge that has already decided a claim
+  # is sound describes a route that justifies it, so the description is written
+  # before any verdict exists.
+  max_evidence_chars: 60000
+  # Oracle commands resolve from here, so `oracles/case_facts.py` works
+  # regardless of the shell's cwd.
+  oracle_cwd: ..
+  oracle_timeout_s: 60
+  llm:
+    backend: openai
+    model: gpt-4.1
+    temperature: 0
+    max_retries: 8
+    timeout_s: 180
+
+systems:
+  previous:
+    adapter: agenticsys_sse
+    process:
+      # Relative paths resolve from this YAML file, not the shell's CWD.
+      cwd: ../../../AgenticSys_20260608
+      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      startup_timeout_s: 240
+      env:
+        PORT: "49102"
+        TRACE_VIEWER_DISABLE: "1"
+        # Lets the checkout import the sibling Amem repository if it has not
+        # been installed editable in the selected Python environment.
+        PYTHONPATH: ".."
+    config:
+      base_url: http://127.0.0.1:49102
+      case_id: "366132845011"
+      trace_db: ../traces/previous.db
+
+  current:
+    adapter: agenticsys_sse
+    process:
+      cwd: ../../../AgenticSys_v2
+      command: [/Users/mingxuanliu/.pyenv/versions/3.11.13/envs/autoAI/bin/python, server.py]
+      startup_timeout_s: 240
+      env:
+        PORT: "49202"
+        TRACE_VIEWER_DISABLE: "1"
+        PYTHONPATH: ".."
+    config:
+      base_url: http://127.0.0.1:49202
+      case_id: "366132845011"
+      trace_db: ../traces/current.db

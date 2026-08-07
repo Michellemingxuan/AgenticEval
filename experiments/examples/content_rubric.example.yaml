@@ -1,0 +1,95 @@
+version: 1
+
+suite:
+  name: credit-risk-content-calibration
+  case_id: "366132845011"
+  data_snapshot: "case-366132845011@sha256:<fill-me>"
+
+questions:
+  - name: payment_returns
+    text: "Did the customer have any payment returns?"
+    relation:
+      type: seed
+
+    evaluation:
+
+      # Deterministic ground truth for anything a script can answer outright.
+      # No LLM is consulted: Python computes the value and compares it against
+      # the material numbers the answer states. `command` runs from
+      # `content_evaluation.oracle_cwd` (default: the config file's directory);
+      # use `value` instead when the truth is already known and fixed.
+      expected_answers:
+        - id: return_count
+          description: "Number of returned payments."
+          command: [python, oracles/return_count.py, "366132845011"]
+          tolerance: 0
+          critical: true
+
+      must_have_points:
+        - id: mh_return_occurrence
+          description: "State whether any returned payments occurred."
+          acceptable_variants:
+            - "Explicit yes/no supported by payment evidence"
+          shallow_mentions_not_enough:
+            - "Discussing payment behavior without answering occurrence"
+          evidence_requirement: quantitative_or_row_level
+          importance: critical
+          weight: 3
+
+        - id: mh_return_count
+          description: "Give the number of returned payments when available."
+          evidence_requirement: traced_number
+          importance: major
+          weight: 2
+
+        - id: mh_return_timing
+          description: "Give the dates or periods of the returns when available."
+          evidence_requirement: row_level
+          importance: major
+          weight: 2
+
+      reference_facts:
+        - id: fact_return_count
+          proposition: "The number of returned payments in the available history."
+          importance: critical
+          expected:
+            value: "<fill-from-canonical-query>"
+            unit: count
+            tolerance: 0
+          scope:
+            table: payments
+            time_window: all_available
+            population: customer_payments
+          canonical_query:
+            tool: query_table
+            arguments:
+              table_name: payments
+              filters: "<return-status filter>"
+
+      logic_expectations:
+        - id: logic_no_return_to_credit_risk_causality
+          description: >
+            Do not infer overall low credit risk solely from the absence of
+            returned payments.
+          severity: critical
+
+  - name: payment_returns_followup
+    text: "When did those returned payments occur?"
+    relation:
+      type: follow_up
+      parent: payment_returns_seed
+
+    evaluation:
+      must_have_points:
+        - id: mh_followup_resolves_reference
+          description: >
+            Resolve “those returned payments” using the parent turn rather than
+            treating it as an unrelated question.
+          importance: critical
+          weight: 3
+        - id: mh_followup_dates
+          description: "Provide the return dates or state that none exist."
+          evidence_requirement: row_level
+          importance: critical
+          weight: 3
+

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+experiments/results/
+experiments/traces/
+dist/
+build/
+*.egg-info/
+
+.DS_Store
+# Scratch: design PDFs and probe configs generated while iterating.
+tmp/
+experiments/configs/_*.yaml
+experiments/questions/_*.yaml

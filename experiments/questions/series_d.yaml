@@ -1,0 +1,41 @@
+version: 1
+
+# SERIES D — discovery, asked cold.
+#
+# One question, and it is the SAME question as B9. That is the point.
+#
+# B9 lands after eight turns: the reaction window is established, the
+# transaction pattern is named, an intent verdict is on the record. D1 asks it
+# with none of that. The pair isolates what the conversation was worth — a
+# system that answers D1 as well as B9 was not using the context, and one that
+# answers D1 far worse has a memory story to tell rather than a reasoning one.
+#
+# Not marked `memory_required`: there is nothing to remember. Run it in its own
+# session, or first in a session, so no earlier turn can leak in. Sharing a
+# session with series B would destroy the contrast the pair exists to draw.
+#
+# The comparison to read is the two ANSWERS side by side, not the two scores.
+# The scores can coincide while the answers differ completely in what they had
+# to work from.
+
+questions:
+  - name: d1_model_opportunities_cold
+    question: "Any model opportunities?"
+    evaluation:
+      must_have_points:
+        - id: mh_opportunity_named
+          description: >-
+            Name a specific opportunity — a feature, a signal, a data gap, or a
+            threshold — not "the model could be improved".
+        - id: mh_grounded_in_this_case
+          description: >-
+            Tie the opportunity to something observed in THIS case: a driver
+            that failed to move, a signal the scores missed, a behaviour no
+            feature captures. Generic modelling advice does not satisfy this,
+            and with no prior turns to lean on this is where a cold answer
+            most often fails.
+        - id: mh_does_its_own_discovery
+          description: >-
+            Establish the context it needs — which scores moved, when, and on
+            what drivers — rather than asserting an opportunity with no
+            investigation behind it. 

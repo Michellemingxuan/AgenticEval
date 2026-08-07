@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1096" width="1440" height="1096" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <title>Complex question suite — dependency map (experiments/questions/complex.yaml)</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#006FCF"/></marker>
+    <marker id="ah-soft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4A5568"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1440" height="1096" rx="0" fill="#FFFFFF"/>
+  <rect x="0" y="0" width="1440" height="88" rx="0" fill="#00175A"/>
+  <rect x="0" y="0" width="1440" height="4" rx="0" fill="#006FCF"/>
+  <rect x="56" y="26" width="76" height="38" rx="0" fill="#006FCF"/>
+  <text x="66" y="42" font-size="10" fill="#FFFFFF" font-weight="700" letter-spacing="1.2">AMERICAN</text>
+  <text x="66" y="56" font-size="10" fill="#FFFFFF" font-weight="700" letter-spacing="1.2">EXPRESS</text>
+  <text x="154" y="46" font-size="25" fill="#FFFFFF" font-weight="700" font-family="Georgia, 'Times New Roman', serif">Complex Question Suite — Dependency Map</text>
+  <text x="156" y="64" font-size="10" fill="#FFFFFF" font-weight="700" letter-spacing="1.1" opacity="0.5">AGENTICEVAL  ·  EXPERIMENTS/QUESTIONS/COMPLEX.YAML  ·  EIGHT TURNS, ONE STATEFUL SESSION</text>
+  <text x="56" y="170" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">OPENING</text>
+  <rect x="56" y="180" width="2" height="184" rx="0" fill="#E2E8F0"/>
+  <text x="56" y="444" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">REACTION</text>
+  <rect x="56" y="454" width="2" height="228" rx="0" fill="#E2E8F0"/>
+  <text x="56" y="750" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">READING</text>
+  <rect x="56" y="760" width="2" height="204" rx="0" fill="#E2E8F0"/>
+  <path d="M 570 480 L 612 480" fill="none" stroke="#006FCF" stroke-width="2" marker-end="url(#ah)"/>
+  <path d="M 570 504 C 596 504, 596 609, 612 609" fill="none" stroke="#006FCF" stroke-width="2" marker-end="url(#ah)"/>
+  <path d="M 570 779 L 612 779" fill="none" stroke="#006FCF" stroke-width="2" marker-end="url(#ah)"/>
+  <path d="M 570 808 C 596 808, 596 894, 612 894" fill="none" stroke="#006FCF" stroke-width="2" marker-end="url(#ah)"/>
+  <path d="M 835 682 L 835 698 Q 835 704 829 704 L 361 704 Q 355 704 355 710 L 355 724" fill="none" stroke="#4A5568" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#ah-soft)"/>
+  <rect x="400" y="682" width="400" height="16" rx="0" fill="#FFFFFF"/>
+  <text x="404" y="694" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">SURFACES WHAT HAPPENED  ⇢  ASKS WHAT IT MEANS</text>
+  <rect x="140" y="150" width="430" height="100" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="140" y="150" width="3" height="100" rx="0" fill="#166534"/>
+  <rect x="154" y="162" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="164" y="176" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">1</text>
+  <text x="184" y="177" font-size="13" fill="#00175A" font-weight="700">case_overview</text>
+  <text x="155" y="202" font-size="11" fill="#334155" font-style="italic">“What is this case about?”</text>
+  <rect x="154" y="214" width="86.19" height="16" rx="2" fill="#DCFCE7" stroke="#86EFAC" stroke-width="1"/>
+  <text x="161.5" y="225.5" font-size="9" fill="#166534" font-weight="700">2 oracle facts</text>
+  <rect x="245.19" y="214" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="252.69" y="225.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <rect x="321.125" y="214" width="60.76499999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="328.625" y="225.5" font-size="9" fill="#334155" font-weight="700">no parent</text>
+  <text x="155" y="246" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="203" y="246" font-size="9" fill="#4A5568">crossbu_cards · payments_data</text>
+  <rect x="140" y="265" width="430" height="100" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="140" y="265" width="3" height="100" rx="0" fill="#166534"/>
+  <rect x="154" y="277" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="164" y="291" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">2</text>
+  <text x="184" y="292" font-size="13" fill="#00175A" font-weight="700">spending_spikes_drivers</text>
+  <text x="155" y="317" font-size="11" fill="#334155" font-style="italic">“Any spending spikes? What are the drivers for it?”</text>
+  <rect x="154" y="329" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="161.5" y="340.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <rect x="229.935" y="329" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="237.435" y="340.5" font-size="9" fill="#92400E" font-weight="700">2 logic</text>
+  <rect x="285.53" y="329" width="60.76499999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="293.03" y="340.5" font-size="9" fill="#334155" font-weight="700">no parent</text>
+  <text x="155" y="361" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="203" y="361" font-size="9" fill="#4A5568">spends · spend_drivers · model_scores · score_drivers</text>
+  <rect x="140" y="424" width="430" height="114" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="140" y="424" width="3" height="114" rx="0" fill="#006FCF"/>
+  <rect x="154" y="436" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="164" y="450" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">3</text>
+  <text x="184" y="451" font-size="13" fill="#00175A" font-weight="700">tsr_cdss_bureau_reaction</text>
+  <text x="155" y="476" font-size="11" fill="#334155" font-style="italic">“How did TSR and CDSS react? While the TSR and CDSS were</text>
+  <text x="155" y="490" font-size="11" fill="#334155" font-style="italic">reacting, how was the bureau profile?”</text>
+  <rect x="154" y="502" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="161.5" y="513.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <rect x="229.935" y="502" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="237.435" y="513.5" font-size="9" fill="#92400E" font-weight="700">2 logic</text>
+  <rect x="285.53" y="502" width="91.27499999999999" height="16" rx="2" fill="#E8F2FC" stroke="#9CC8EE" stroke-width="1"/>
+  <text x="293.03" y="513.5" font-size="9" fill="#006FCF" font-weight="700">parent of 4 · 5</text>
+  <text x="155" y="534" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="203" y="534" font-size="9" fill="#4A5568">model_scores · score_drivers · bureau</text>
+  <rect x="620" y="424" width="430" height="114" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="620" y="424" width="3" height="114" rx="0" fill="#4C1D95"/>
+  <rect x="634" y="436" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="644" y="450" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">4</text>
+  <text x="664" y="451" font-size="13" fill="#00175A" font-weight="700">tsr_cdss_before_after</text>
+  <text x="635" y="476" font-size="11" fill="#334155" font-style="italic">“What are the differences before and after the recent reaction of</text>
+  <text x="635" y="490" font-size="11" fill="#334155" font-style="italic">TSR and CDSS? Any changes regarding spending patterns, drivers?”</text>
+  <rect x="634" y="502" width="45.51" height="16" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width="1"/>
+  <text x="641.5" y="513.5" font-size="9" fill="#4C1D95" font-weight="700">memory</text>
+  <rect x="684.51" y="502" width="55.67999999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="692.01" y="513.5" font-size="9" fill="#334155" font-weight="700">↳ turn 3</text>
+  <rect x="745.1899999999999" y="502" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="752.6899999999999" y="513.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <rect x="821.125" y="502" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="828.625" y="513.5" font-size="9" fill="#92400E" font-weight="700">1 logic</text>
+  <text x="635" y="534" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="683" y="534" font-size="9" fill="#4A5568">model_scores · score_drivers · spends · spend_drivers</text>
+  <rect x="620" y="553" width="430" height="114" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="620" y="553" width="3" height="114" rx="0" fill="#4C1D95"/>
+  <rect x="634" y="565" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="644" y="579" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">5</text>
+  <text x="664" y="580" font-size="13" fill="#00175A" font-weight="700">abnormal_transactions_during_reaction</text>
+  <text x="635" y="605" font-size="11" fill="#334155" font-style="italic">“Summarize the abnormal transactions when TSR was reacting</text>
+  <text x="635" y="619" font-size="11" fill="#334155" font-style="italic">in 2025/2026.”</text>
+  <rect x="634" y="631" width="45.51" height="16" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width="1"/>
+  <text x="641.5" y="642.5" font-size="9" fill="#4C1D95" font-weight="700">memory</text>
+  <rect x="684.51" y="631" width="55.67999999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="692.01" y="642.5" font-size="9" fill="#334155" font-weight="700">↳ turn 3</text>
+  <rect x="745.1899999999999" y="631" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="752.6899999999999" y="642.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <rect x="821.125" y="631" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="828.625" y="642.5" font-size="9" fill="#92400E" font-weight="700">1 logic</text>
+  <text x="635" y="663" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="683" y="663" font-size="9" fill="#4A5568">spends · spend_drivers</text>
+  <rect x="140" y="730" width="430" height="114" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="140" y="730" width="3" height="114" rx="0" fill="#006FCF"/>
+  <rect x="154" y="742" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="164" y="756" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">6</text>
+  <text x="184" y="757" font-size="13" fill="#00175A" font-weight="700">connected_transaction_pattern</text>
+  <text x="155" y="782" font-size="11" fill="#334155" font-style="italic">“What transactions are connected? Is there a default pattern? Is</text>
+  <text x="155" y="796" font-size="11" fill="#334155" font-style="italic">the behaviour intentional, accidental or explainable?”</text>
+  <rect x="154" y="808" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="161.5" y="819.5" font-size="9" fill="#334155" font-weight="700">4 must-have</text>
+  <rect x="229.935" y="808" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="237.435" y="819.5" font-size="9" fill="#92400E" font-weight="700">2 logic</text>
+  <rect x="285.53" y="808" width="91.27499999999999" height="16" rx="2" fill="#E8F2FC" stroke="#9CC8EE" stroke-width="1"/>
+  <text x="293.03" y="819.5" font-size="9" fill="#006FCF" font-weight="700">parent of 7 · 8</text>
+  <text x="155" y="840" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="203" y="840" font-size="9" fill="#4A5568">spends · spend_drivers · payments_data · model_scores</text>
+  <rect x="620" y="730" width="430" height="100" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="620" y="730" width="3" height="100" rx="0" fill="#4C1D95"/>
+  <rect x="634" y="742" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="644" y="756" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">7</text>
+  <text x="664" y="757" font-size="13" fill="#00175A" font-weight="700">evidence_supporting_pattern</text>
+  <text x="635" y="782" font-size="11" fill="#334155" font-style="italic">“What evidence supports it?”</text>
+  <rect x="634" y="794" width="45.51" height="16" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width="1"/>
+  <text x="641.5" y="805.5" font-size="9" fill="#4C1D95" font-weight="700">memory</text>
+  <rect x="684.51" y="794" width="55.67999999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="692.01" y="805.5" font-size="9" fill="#334155" font-weight="700">↳ turn 6</text>
+  <rect x="745.1899999999999" y="794" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="752.6899999999999" y="805.5" font-size="9" fill="#334155" font-weight="700">2 must-have</text>
+  <rect x="821.125" y="794" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="828.625" y="805.5" font-size="9" fill="#92400E" font-weight="700">1 logic</text>
+  <text x="635" y="826" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="683" y="826" font-size="9" fill="#4A5568">spends · spend_drivers · payments_data · model_scores</text>
+  <rect x="620" y="845" width="430" height="100" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="620" y="845" width="3" height="100" rx="0" fill="#4C1D95"/>
+  <rect x="634" y="857" width="20" height="20" rx="2" fill="#00175A"/>
+  <text x="644" y="871" font-size="11" fill="#FFFFFF" font-weight="700" text-anchor="middle">8</text>
+  <text x="664" y="872" font-size="13" fill="#00175A" font-weight="700">evidence_contradicting_pattern</text>
+  <text x="635" y="897" font-size="11" fill="#334155" font-style="italic">“What evidence contradicts it?”</text>
+  <rect x="634" y="909" width="45.51" height="16" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width="1"/>
+  <text x="641.5" y="920.5" font-size="9" fill="#4C1D95" font-weight="700">memory</text>
+  <rect x="684.51" y="909" width="55.67999999999999" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="692.01" y="920.5" font-size="9" fill="#334155" font-weight="700">↳ turn 6</text>
+  <rect x="745.1899999999999" y="909" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="752.6899999999999" y="920.5" font-size="9" fill="#334155" font-weight="700">2 must-have</text>
+  <rect x="821.125" y="909" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="828.625" y="920.5" font-size="9" fill="#92400E" font-weight="700">1 logic</text>
+  <text x="635" y="941" font-size="8" fill="#94A3B8" font-weight="700" letter-spacing="1.25">SCOPE</text>
+  <text x="683" y="941" font-size="9" fill="#4A5568">spends · spend_drivers · payments_data · model_scores</text>
+  <rect x="140" y="566" width="430" height="72" rx="4" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="154" y="586" font-size="9" fill="#92400E" font-weight="700" letter-spacing="1.25">SIBLINGS, NOT A CHAIN</text>
+  <text x="154" y="604" font-size="10.5" fill="#334155">Turns 4 and 5 both read turn 3.</text>
+  <text x="154" y="618" font-size="10.5" fill="#334155">Neither reads the other.</text>
+  <rect x="140" y="872" width="430" height="72" rx="4" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="154" y="892" font-size="9" fill="#92400E" font-weight="700" letter-spacing="1.25">ONE VERDICT, TWO STRESS TESTS</text>
+  <text x="154" y="910" font-size="10.5" fill="#334155">Turn 6 commits to intentional / accidental /</text>
+  <text x="154" y="924" font-size="10.5" fill="#334155">explainable. 7 and 8 attack it from each side.</text>
+  <rect x="1090" y="150" width="290" height="226" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="1090" y="150" width="290" height="3" rx="0" fill="#006FCF"/>
+  <text x="1104" y="174" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">LEGEND</text>
+  <path d="M 1106 186 L 1142 186" fill="none" stroke="#006FCF" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="1152" y="190" font-size="10.5" fill="#334155">relation: follow_up</text>
+  <path d="M 1106 212 L 1142 212" fill="none" stroke="#4A5568" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#ah-soft)"/>
+  <text x="1152" y="216" font-size="10.5" fill="#334155">thematic hand-off</text>
+  <rect x="1106" y="230" width="45.51" height="16" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width="1"/>
+  <text x="1113.5" y="241.5" font-size="9" fill="#4C1D95" font-weight="700">memory</text>
+  <text x="1161.51" y="242" font-size="10.5" fill="#334155">memory_required: true</text>
+  <rect x="1106" y="256" width="50.595" height="16" rx="2" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+  <text x="1113.5" y="267.5" font-size="9" fill="#92400E" font-weight="700">2 logic</text>
+  <text x="1166.595" y="268" font-size="10.5" fill="#334155">logic_expectations</text>
+  <rect x="1106" y="282" width="86.19" height="16" rx="2" fill="#DCFCE7" stroke="#86EFAC" stroke-width="1"/>
+  <text x="1113.5" y="293.5" font-size="9" fill="#166534" font-weight="700">2 oracle facts</text>
+  <text x="1202.19" y="294" font-size="10.5" fill="#334155">expected_answers</text>
+  <rect x="1106" y="308" width="70.935" height="16" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1113.5" y="319.5" font-size="9" fill="#334155" font-weight="700">3 must-have</text>
+  <text x="1186.935" y="320" font-size="10.5" fill="#334155">must_have_points</text>
+  <rect x="1106" y="336" width="3" height="14" rx="0" fill="#006FCF"/>
+  <text x="1120" y="347" font-size="10.5" fill="#334155">blue rail = parent turn</text>
+  <rect x="1090" y="396" width="290" height="216" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="1090" y="396" width="290" height="3" rx="0" fill="#006FCF"/>
+  <text x="1104" y="420" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">SUITE AT A GLANCE</text>
+  <rect x="1104" y="436" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="451" font-size="10.5" fill="#334155">Turns</text>
+  <text x="1356" y="451" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">8</text>
+  <rect x="1104" y="462" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="477" font-size="10.5" fill="#334155">Parent turns</text>
+  <text x="1356" y="477" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">2</text>
+  <rect x="1104" y="488" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="503" font-size="10.5" fill="#334155">Memory-dependent turns</text>
+  <text x="1356" y="503" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">4</text>
+  <rect x="1104" y="514" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="529" font-size="10.5" fill="#334155">Must-have points</text>
+  <text x="1356" y="529" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">23</text>
+  <rect x="1104" y="540" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="555" font-size="10.5" fill="#334155">Logic expectations</text>
+  <text x="1356" y="555" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">10</text>
+  <rect x="1104" y="566" width="262" height="22" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="1114" y="581" font-size="10.5" fill="#334155">Script-checked facts</text>
+  <text x="1356" y="581" font-size="11" fill="#00175A" font-weight="700" text-anchor="end">2</text>
+  <rect x="1090" y="632" width="290" height="160" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="1090" y="632" width="290" height="3" rx="0" fill="#006FCF"/>
+  <text x="1104" y="656" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">HOW A TURN IS SCORED</text>
+  <text x="1106" y="672" font-size="11" fill="#00175A" font-weight="700">expected_answers</text>
+  <text x="1106" y="687" font-size="10" fill="#4A5568">a script decides — oracle, no judge</text>
+  <text x="1106" y="712" font-size="11" fill="#00175A" font-weight="700">must_have_points</text>
+  <text x="1106" y="727" font-size="10" fill="#4A5568">judged: did the answer cover it?</text>
+  <text x="1106" y="752" font-size="11" fill="#00175A" font-weight="700">logic_expectations</text>
+  <text x="1106" y="767" font-size="10" fill="#4A5568">judged: does the reasoning hold?</text>
+  <rect x="1090" y="812" width="290" height="166" rx="2" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+  <rect x="1090" y="812" width="290" height="3" rx="0" fill="#006FCF"/>
+  <text x="1104" y="836" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">COLD MODE</text>
+  <text x="1106" y="856" font-size="10.5" fill="#334155">Four turns name something only the</text>
+  <text x="1106" y="872" font-size="10.5" fill="#334155">session can supply — “the recent</text>
+  <text x="1106" y="888" font-size="10.5" fill="#334155">reaction”, “it”. Run cold, they fail</text>
+  <text x="1106" y="904" font-size="10.5" fill="#334155">by construction, and that failure is</text>
+  <text x="1106" y="920" font-size="10.5" fill="#334155">the measurement: memory_hit_rate is</text>
+  <text x="1106" y="936" font-size="10.5" fill="#334155">read off these four turns, not off</text>
+  <text x="1106" y="952" font-size="10.5" fill="#334155">the suite as a whole.</text>
+  <rect x="56" y="990" width="994" height="76" rx="2" fill="#F4F6F9" stroke="#E2E8F0" stroke-width="1"/>
+  <text x="74" y="1012" font-size="9" fill="#4A5568" font-weight="700" letter-spacing="1.25">WHY THE ORDER IS THE DESIGN</text>
+  <text x="74" y="1032" font-size="11" fill="#334155">The suite is asked top to bottom in one session. Turns 1–2 stand alone; the reaction cluster fixes a window that two</text>
+  <text x="74" y="1048" font-size="11" fill="#334155">follow-ups inherit; the reading cluster commits to a verdict, then argues both sides of it in separate turns.</text>
+  <rect x="1090" y="990" width="290" height="76" rx="2" fill="#00175A" stroke="#00175A" stroke-width="1"/>
+  <text x="1106" y="1012" font-size="9" fill="#FFFFFF" font-weight="700" letter-spacing="1.25">SOURCE</text>
+  <text x="1106" y="1032" font-size="10.5" fill="#FFFFFF">experiments/questions/</text>
+  <text x="1106" y="1047" font-size="10.5" fill="#FFFFFF">complex.yaml</text>
+</svg>

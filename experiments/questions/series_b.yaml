@@ -1,0 +1,392 @@
+version: 1
+
+# SERIES B — the investigation chain. Nine turns of one conversation.
+#
+# No single script settles these, so they score on `must_have_points` (did the
+# answer cover what an analyst needs?) and `logic_expectations` (does the
+# reasoning hold?). Where a figure IS computable it still gets an oracle —
+# B1 carries two — because a judge's opinion is not evidence when a script can
+# decide.
+#
+# A must-have is `id` + `description`, and nothing else. The description is the
+# whole rubric — it is what reaches the judge, so a requirement that matters
+# has to be written into it. Fields that reached nothing (`evidence_requirement`,
+# `expected_scope`, `importance`, `logic_expectations`) have been removed rather
+# than left in place, because a field that looks enforced and is not is worse
+# than an absent one.
+#
+# The ORDER is the test. Five of these are follow-ups whose subject exists only
+# in the previous answer — "the reacting period", "the conclusion" — so asked
+# cold they have no referent and will read as failures by construction. Two
+# splits are deliberate:
+#
+#   B2 / B3   B2 asks how the scores reacted and names no window. B3 then
+#             anchors to 2025/2026. Asked as one question, an orchestrator can
+#             brief the whole range and never commit to an episode; split, B2
+#             has to choose one and B3 has to match it. That is exactly where
+#             the observed wrong-window failure lives.
+#
+#   B5/B6/B7  connectedness, then default pattern, then intent. Asked together
+#             an answer can satisfy the easy part and let the hard part ride on
+#             it; asked in sequence each has to stand on the last.
+
+questions:
+  - name: b1_case_overview
+    question: "What is this case about?"
+    evaluation:
+      # The overview names figures a script can check, so check them rather
+      # than asking a judge whether they looked right.
+      expected_answers:
+        - id: commercial_card_count
+          description: "Cards in the small-business (SBS) portfolio."
+          command: [python3, oracles/case_facts.py, --fact, commercial_card_count]
+          tolerance: 0
+          critical: true
+        - id: payment_return_count
+          description: "Payments flagged as returned."
+          command: [python3, oracles/case_facts.py, --fact, payment_return_count]
+          tolerance: 0
+          critical: true
+      must_have_points:
+        - id: mh_card_portfolio
+          description: >-
+            Describe the card portfolio: how many cards, which are commercial
+            (SBS) versus consumer (CPS), and their balances.
+        - id: mh_returned_payments
+          description: >-
+            State the number of returned payments, grounded in the payments
+            table rather than a curated report.
+        - id: mh_successful_payments
+          description: >-
+            State the total successful payments — the count, the amount, or
+            both.
+
+  # No window in the question. The system must pick the episode itself, and
+  # whether it picks the one the case is about is the measurement.
+  - name: b2_tsr_cdss_reaction
+    question: "In this case, how did TSR and CDSS react?"
+    evaluation:
+      must_have_points:
+        - id: mh_tsr_trajectory
+          description: >-
+            State the TSR trajectory with dated values, including its peak.
+        - id: mh_cdss_trajectory
+          description: >-
+            State the CDSS trajectory, including whether it crossed its risky
+            threshold.
+        - id: mh_threshold_is_metric_specific
+          description: >-
+            Use each score's OWN risky threshold. TSR and CDSS have different
+            ones — calling CDSS risky against TSR's cut-off, or reporting a
+            single threshold as if it governed both, is wrong even when the
+            trajectory is right.
+        - id: mh_reaction_is_dated
+          description: >-
+            Commit to WHEN the reaction happened — a specific month or window,
+            not "over the period" or a month-by-month recital of the whole
+            range with no episode identified.
+
+  - name: b3_bureau_during_reaction
+    question: >-
+      While the TSR and CDSS were reacting in 2025/2026, how was the bureau
+      profile?
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b2_tsr_cdss_reaction
+    evaluation:
+      must_have_points:
+        - id: mh_bureau_trajectory
+          description: >-
+            Describe the bureau profile — FICO, derog marks, delinquent trades
+            — over the reacting window, not merely the latest bureau value.
+        - id: mh_window_matches_reaction
+          description: >-
+            Read the bureau profile over the SAME period the scores reacted in,
+            and say what that period is. The question pins it to 2025/2026;
+            a bureau profile reported for another year has answered a different
+            question however well its figures trace.
+
+  - name: b4_abnormal_transactions
+    question: "Summarize the abnormal transactions when TSR was reacting recently."
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b3_bureau_during_reaction
+    evaluation:
+      must_have_points:
+        - id: mh_named_merchants
+          description: >-
+            Name the specific abnormal merchants, not a category or a count
+            alone.
+        - id: mh_abnormal_has_a_yardstick
+          description: >-
+            Say what makes these transactions abnormal — the comparison being
+            made. A typical amount, a typical merchant, a typical frequency,
+            or a stated threshold. "Unusual" with no yardstick names no
+            property the data could confirm or refute.
+        - id: mh_window_is_the_reaction
+          description: >-
+            Restrict the summary to the period when TSR was reacting, and say
+            what that period is.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Show the analysis reached individual TRANSACTIONS.
+
+            A transaction row carries more than a spend: WHEN (spend_date),
+            HOW MUCH (Amount), WHO (Merchant Name, Merchant Industry), how
+            unusual it was (Spend Divergence Index), and its OWN model output
+            — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            se_no_norm_wtd_pd_unpaid_amt and the rest of
+            modelling_data_transaction. Any of those, addressed at a single
+            row, is transaction-level evidence: one transaction's risk score
+            or decline code counts as much as its amount.
+
+            The test is PER-ROW versus AGGREGATED, not which column. A
+            per-merchant or per-month total is an aggregate over transactions
+            however detailed it looks, and a figure quoted from a curated
+            report is not an observation of the data at all. Identifying
+            specific rows, or counting the rows meeting a stated row-level
+            criterion, is what qualifies.
+
+        - id: mh_per_transaction_model_signal
+          description: >-
+            Did the analysis reach the model's view of an INDIVIDUAL
+            transaction?
+
+            Distinct from transaction-level evidence generally. A spend row
+            says what was bought, when, and from whom; `modelling_data_transaction`
+            and `model_scores_transaction` say what the MODEL made of that same
+            row — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            auto_decline_pos_deny_cd_s1, se_no_norm_wtd_pd_unpaid_amt,
+            cust_enhnc_one_way_spend_concentration_30day_rt1. Naming a
+            transaction and naming what the model scored it are different
+            findings, and only the second says whether the behaviour was
+            visible to the model at the moment it happened.
+
+            The GRAIN is the test, not the column name. tot_struct_risk_score
+            also exists per MONTH in model_scores, and score_drivers is keyed
+            by trans_month — a monthly TSR series is not a per-transaction
+            signal however often the column is mentioned. What qualifies is a
+            model value attached to a specific transaction, or a count of
+            transactions selected by one.
+
+            Answer NO honestly when the analysis stayed on spend rows and
+            monthly scores. That is a real and common shape, and recording it
+            is the point: it says the reasoning never asked how the model saw
+            the individual events it is describing.
+  - name: b5_connected_transactions
+    question: "Overall, what transactions are connected?"
+    evaluation:
+      must_have_points:
+        - id: mh_connection_criterion
+          description: >-
+            Say what connects the transactions — shared merchant, timing,
+            amount structure, or sequence — not merely that they are related.
+            Any set of rows shares some attribute, so the criterion is what
+            makes "connected" mean anything.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Show the analysis reached individual TRANSACTIONS.
+
+            A transaction row carries more than a spend: WHEN (spend_date),
+            HOW MUCH (Amount), WHO (Merchant Name, Merchant Industry), how
+            unusual it was (Spend Divergence Index), and its OWN model output
+            — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            se_no_norm_wtd_pd_unpaid_amt and the rest of
+            modelling_data_transaction. Any of those, addressed at a single
+            row, is transaction-level evidence: one transaction's risk score
+            or decline code counts as much as its amount.
+
+            The test is PER-ROW versus AGGREGATED, not which column. A
+            per-merchant or per-month total is an aggregate over transactions
+            however detailed it looks, and a figure quoted from a curated
+            report is not an observation of the data at all. Identifying
+            specific rows, or counting the rows meeting a stated row-level
+            criterion, is what qualifies.
+
+        - id: mh_per_transaction_model_signal
+          description: >-
+            Did the analysis reach the model's view of an INDIVIDUAL
+            transaction?
+
+            Distinct from transaction-level evidence generally. A spend row
+            says what was bought, when, and from whom; `modelling_data_transaction`
+            and `model_scores_transaction` say what the MODEL made of that same
+            row — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            auto_decline_pos_deny_cd_s1, se_no_norm_wtd_pd_unpaid_amt,
+            cust_enhnc_one_way_spend_concentration_30day_rt1. Naming a
+            transaction and naming what the model scored it are different
+            findings, and only the second says whether the behaviour was
+            visible to the model at the moment it happened.
+
+            The GRAIN is the test, not the column name. tot_struct_risk_score
+            also exists per MONTH in model_scores, and score_drivers is keyed
+            by trans_month — a monthly TSR series is not a per-transaction
+            signal however often the column is mentioned. What qualifies is a
+            model value attached to a specific transaction, or a count of
+            transactions selected by one.
+
+            Answer NO honestly when the analysis stayed on spend rows and
+            monthly scores. That is a real and common shape, and recording it
+            is the point: it says the reasoning never asked how the model saw
+            the individual events it is describing.
+  - name: b6_default_pattern
+    question: "Is there a default pattern?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b5_connected_transactions
+    evaluation:
+      must_have_points:
+        - id: mh_default_pattern_verdict
+          description: >-
+            Answer whether the behaviour matches a default pattern, and say
+            which observable features do or do not fit it.
+        - id: mh_pattern_is_evidenced
+          description: >-
+            Support the verdict with figures or rows — payment failures,
+            balance trajectory, score movement — rather than asserting the
+            pattern from the connectedness finding alone.
+
+  - name: b7_intent_verdict
+    question: "Is the behaviour intentional, accidental or explainable?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b6_default_pattern
+    evaluation:
+      must_have_points:
+        - id: mh_intent_verdict
+          description: >-
+            Commit to intentional, accidental or explainable — and give the
+            reasoning, rather than listing the three and declining to choose.
+            Intent cannot be read off transaction data, so the verdict must be
+            argued from what the pattern shows, never asserted as though the
+            data recorded a motive.
+        - id: mh_rationale_is_sound
+          description: >-
+            The rationale must actually support the verdict it was given for.
+
+            The three readings are not equally consistent with every
+            observation, and a sound rationale names what DISCRIMINATES between
+            them. Regular amounts on a fixed cycle at one merchant argue for
+            deliberate structuring; the same total arriving in scattered
+            amounts on no cycle argues against it. A bare "spending was
+            concentrated at a few merchants" fits intentional, accidental and
+            explainable alike, so it justifies none of them and is not a
+            rationale — it is a restatement of the pattern.
+
+            Judge the reasoning, not its confidence: an argument that reaches
+            "explainable" from the routine, recurring nature of the spend is
+            sound, and an argument that reaches "intentional" from the same
+            observation without saying what rules the other two out is not.
+
+  # "There is no contradicting evidence" may well be the true answer, and the
+  # rubric must not punish it for being one. Every point below therefore
+  # BRANCHES: it says what a found-something answer owes and what a
+  # found-nothing answer owes instead. A null answer is where scrutiny matters
+  # most — it is the cheapest thing to say and the hardest to justify — so none
+  # of these is waived by finding nothing.
+  - name: b8_contradicting_evidence
+    question: "What evidence contradicts the conclusion?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b7_intent_verdict
+    evaluation:
+      must_have_points:
+        - id: mh_contradiction_offered
+          description: >-
+            Offer at least one genuine counter-observation, OR — if there
+            really is none — say what was searched: which tables, which
+            period, and what would have counted as contradicting. Not finding
+            contradicting evidence is not the same as none existing, and "no
+            contradicting evidence" with no account of the search is an
+            assertion rather than a finding.
+        - id: mh_weighs_against_conclusion
+          description: >-
+            Say what the result does to confidence in the conclusion.
+
+            If counter-evidence was found: whether it weakens, overturns or
+            leaves the conclusion standing, and why.
+
+            If none was found: what that absence licenses and what it does
+            not. Finding nothing is weak positive evidence at best — it raises
+            confidence only as far as the search was capable of finding
+            something, and an answer that treats it as confirmation has
+            overclaimed.
+        - id: mh_transaction_level_evidence
+          description: >-
+            Show the work reached individual TRANSACTIONS — the counter-
+            evidence if there is any, otherwise the SEARCH itself. A null
+            result is only as credible as the level it was looked for at: "no
+            contradicting evidence" established from monthly totals or from a
+            curated report has not looked where a contradiction would live.
+
+            A transaction row carries more than a spend: WHEN (spend_date),
+            HOW MUCH (Amount), WHO (Merchant Name, Merchant Industry), how
+            unusual it was (Spend Divergence Index), and its OWN model output
+            — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            se_no_norm_wtd_pd_unpaid_amt and the rest of
+            modelling_data_transaction. Any of those, addressed at a single
+            row, is transaction-level evidence.
+
+            The test is PER-ROW versus AGGREGATED, not which column. A
+            per-merchant or per-month total is an aggregate over transactions
+            however detailed it looks. Identifying specific rows, or counting
+            the rows meeting a stated row-level criterion, is what qualifies.
+
+  # Same question text as D1, deliberately. Here it lands after eight turns of
+  # established context; in series D it is asked cold. The pair measures what
+  # the conversation was worth — compare the two answers, not just the scores.
+        - id: mh_per_transaction_model_signal
+          description: >-
+            Did the analysis reach the model's view of an INDIVIDUAL
+            transaction?
+
+            Distinct from transaction-level evidence generally. A spend row
+            says what was bought, when, and from whom; `modelling_data_transaction`
+            and `model_scores_transaction` say what the MODEL made of that same
+            row — tot_struct_risk_score, credit_loss_prob, appr_deny_cd,
+            auto_decline_pos_deny_cd_s1, se_no_norm_wtd_pd_unpaid_amt,
+            cust_enhnc_one_way_spend_concentration_30day_rt1. Naming a
+            transaction and naming what the model scored it are different
+            findings, and only the second says whether the behaviour was
+            visible to the model at the moment it happened.
+
+            The GRAIN is the test, not the column name. tot_struct_risk_score
+            also exists per MONTH in model_scores, and score_drivers is keyed
+            by trans_month — a monthly TSR series is not a per-transaction
+            signal however often the column is mentioned. What qualifies is a
+            model value attached to a specific transaction, or a count of
+            transactions selected by one.
+
+            Answer NO honestly when the analysis stayed on spend rows and
+            monthly scores. That is a real and common shape, and recording it
+            is the point: it says the reasoning never asked how the model saw
+            the individual events it is describing.
+  - name: b9_model_opportunities_in_context
+    question: "Any model opportunities?"
+    memory_required: true
+    relation:
+      type: follow_up
+      parent: b8_contradicting_evidence
+    evaluation:
+      must_have_points:
+        - id: mh_opportunity_named
+          description: >-
+            Name a specific opportunity — a feature, a signal, a data gap, or a
+            threshold — not "the model could be improved".
+        - id: mh_grounded_in_this_case
+          description: >-
+            Tie the opportunity to something observed in THIS case: a driver
+            that failed to move, a signal the scores missed, a behaviour no
+            feature captures. An opportunity is a gap between what the model
+            did and what the data showed; naming a technique without an
+            observation that motivates it is a recommendation, not a finding.
+        - id: mh_uses_the_conversation
+          description: >-
+            Draw on what earlier turns established — the reaction window, the
+            transaction pattern, the intent verdict — rather than restarting
+            the analysis from scratch.

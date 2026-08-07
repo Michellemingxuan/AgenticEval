@@ -1,0 +1,40 @@
+version: 1
+
+# SERIES C — the report question.
+#
+# One turn, and the only question in the suite where reading a curated report
+# is the CORRECT behaviour rather than a shortcut. Everywhere else, an answer
+# built from the report files rather than from the tables is a finding: the
+# ◇ marker exists to surface it, and `evidence_contradicting_pattern` scored
+# ◇11 ◆0 precisely because the system narrated a report instead of measuring.
+#
+# Here the question says "from the report", so ◇ is the expected shape and a
+# high report-grounded share is not a defect. What IS a defect is the reverse
+# failure: answering from the tables while claiming to summarise the report,
+# or attributing to the report something it does not say.
+#
+# Read this series' `report grounded` row as the target, not the alarm — and
+# read `factual grounded` beside it, because a summary that silently swaps in
+# live figures has stopped being a summary.
+
+questions:
+  - name: c1_report_spending_summary
+    question: "Summarize the spending patterns from the report."
+    evaluation:
+      must_have_points:
+        - id: mh_report_is_the_source
+          description: >-
+            Summarise what the CURATED REPORT says about spending, and make
+            clear that is the source. An answer that re-derives the patterns
+            from the tables has answered a different question — the report's
+            account is what was asked for, including where it is thin.
+        - id: mh_patterns_are_specific
+          description: >-
+            Report specific patterns — merchants, categories, periods,
+            magnitudes — rather than "spending was elevated". Whatever
+            specificity the report carries should survive the summary.
+        - id: mh_attribution_is_honest
+          description: >-
+            Do not attribute to the report figures or findings it does not
+            contain. If the report is silent or incomplete on a pattern, say
+            so rather than filling the gap from live data without flagging it.

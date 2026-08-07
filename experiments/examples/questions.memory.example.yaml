@@ -1,0 +1,12 @@
+questions:
+  - name: payment_returns
+    text: Did the customer have any payment returns?
+    memory_required: false
+
+  - name: payment_returns_followup
+    text: When did those returned payments occur?
+    memory_required: true
+
+  - name: tsr_trend
+    text: How did TSR change during 2025?
+    memory_required: false
