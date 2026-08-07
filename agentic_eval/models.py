@@ -20,6 +20,17 @@ class RunRequest:
     sequence_position: int | None = None
 
 
+#: Bumped when the adapter starts capturing a field the evaluator needs. A run
+#: recorded before the bump cannot be re-scored for what it never captured, and
+#: the failure is silent otherwise: the field reads empty and the metric reads
+#: zero, which is indistinguishable from a real zero. `evaluate-content` warns
+#: rather than guessing.
+#:
+#:   2  episodic_turns_exposed / kb_topics_exposed — memory as content, not a
+#:      flag, so leverage can be judged and audited against what was offered
+RECORD_SCHEMA = 2
+
+
 @dataclass
 class AdapterResult:
     """Normalized adapter result.
@@ -64,6 +75,7 @@ class AdapterResult:
 
     def to_record(self, *, system: str, request: RunRequest) -> dict[str, Any]:
         return {
+            "record_schema": RECORD_SCHEMA,
             "system": system,
             "mode": request.mode,
             "name": request.question.name,

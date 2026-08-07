@@ -47,6 +47,7 @@ from agentic_eval.content.report import (
 from agentic_eval.content.verdicts import MUST_HAVE_VERDICTS
 from agentic_eval.content.verify import _normalize_fact_results
 from agentic_eval.judge import JudgeClient, OpenAIJudgeClient
+from agentic_eval.models import RECORD_SCHEMA
 from agentic_eval.layout import RunLayout
 
 
@@ -387,6 +388,19 @@ def evaluate_runs_file(
         )
         for row in evaluations
     }
+    # A run captured before the adapter learned a field cannot be scored for
+    # it. Say so once, plainly, rather than letting the metric read zero.
+    stale = sorted({
+        int(row.get("record_schema") or 1) for row in records
+        if int(row.get("record_schema") or 1) < RECORD_SCHEMA
+    })
+    if stale:
+        print(
+            f"  note: {len(stale)} schema version(s) older than {RECORD_SCHEMA} "
+            f"in this runs.jsonl (found {stale}). Fields added since then were "
+            "never captured, so metrics over them read empty rather than zero "
+            "— re-run `run` to measure those."
+        )
     evaluator = ContentEvaluator(config, judge=judge)
     eligible = [row for row in records if row.get("outcome") == "ok" and row.get("final_answer")]
     if questions:

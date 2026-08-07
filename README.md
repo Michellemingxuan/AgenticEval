@@ -290,3 +290,29 @@ configured rubric; the LLM judge is not allowed to invent them.
 with pinned model, temperature, timeout, and retry settings. It does not import
 either AgenticSys checkout. The normal `OPENAI_API_KEY` environment variable is
 used unless `api_key_env`, `api_key`, or `base_url` is configured explicitly.
+
+## Running a subset
+
+One config serves a whole sweep — questions, repeats, mode and case are
+per-invocation overrides, validated before either system is started, so a
+typo fails in a second rather than after a ten-minute run.
+
+```bash
+pip install -e .            # puts `agentic-eval` on PATH
+
+# two questions, one repeat, from the full set
+agentic-eval run --config experiments/configs/series_abc.yaml \
+  --question b2_tsr_cdss_reaction --question b4_abnormal_transactions --repeats 1
+
+# see the plan without starting anything
+agentic-eval validate --config experiments/configs/series_abc.yaml --question b2_tsr_cdss_reaction
+
+# score the answers, then build the side-by-side page
+agentic-eval evaluate-content --config <cfg> --runs <run>/runs.jsonl --output-dir <run>
+agentic-eval compare-answers  --evaluations <run>/content/evaluations.jsonl --output-dir <where>
+```
+
+`runs.jsonl` carries a `record_schema`. When the adapter learns to capture a
+field the evaluator needs, the number is bumped and `evaluate-content` says so
+on an older run — a metric over a field that was never captured reads empty,
+which is otherwise indistinguishable from a real zero.
