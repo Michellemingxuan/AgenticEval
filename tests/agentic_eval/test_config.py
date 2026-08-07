@@ -1,3 +1,4 @@
+import pathlib
 import pytest
 from pathlib import Path
 
@@ -294,3 +295,52 @@ def test_no_shipped_config_pins_a_machine_specific_path():
         if "/Users/" in p.read_text() or "/home/" in p.read_text()
     ]
     assert not offenders, offenders
+
+
+def test_safechain_adapts_to_the_one_call_the_judge_makes():
+    """The private gateway is a transport swap, not a second code path.
+
+    Both backends present `.chat.completions.create`, so `complete_json` is
+    written against that and knows nothing else about either.
+    """
+    from types import SimpleNamespace
+    from agentic_eval.llm_judge import SafeChainClient
+
+    class FakeModel:
+        def invoke(self, messages):
+            assert messages[0][0] == "system" and messages[1][0] == "user"
+            return SimpleNamespace(
+                content='{"claims": []}',
+                usage_metadata={"input_tokens": 11, "output_tokens": 2,
+                                "total_tokens": 13},
+            )
+
+    reply = SafeChainClient(FakeModel()).chat.completions.create(
+        model="gpt-4.1",
+        messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        response_format={"type": "json_object"},
+    )
+    assert reply.choices[0].message.content == '{"claims": []}'
+    assert reply.usage.prompt_tokens == 11 and reply.usage.total_tokens == 13
+
+
+def test_an_absent_safechain_says_which_environment_it_needs(monkeypatch):
+    import pytest
+    from agentic_eval.llm_judge import build_client
+    monkeypatch.setitem(__import__("sys").modules, "safechain.lc_factory", None)
+    with pytest.raises(RuntimeError, match="private environment"):
+        build_client({"model": "gpt-4.1"}, "safechain", 60.0)
+
+
+def test_an_unknown_backend_is_rejected_by_name():
+    import pytest
+    from agentic_eval.llm_judge import build_client
+    with pytest.raises(ValueError, match="unknown judge backend"):
+        build_client({}, "anthropic", 60.0)
+
+
+def test_run_tools_is_gone():
+    """It backed the adjudication tier, which was removed; nothing called it."""
+    import agentic_eval.llm_judge as j
+    assert not hasattr(j.OpenAIJudgeClient, "run_tools")
+    assert "run_tools" not in pathlib.Path("agentic_eval/llm_judge.py").read_text()

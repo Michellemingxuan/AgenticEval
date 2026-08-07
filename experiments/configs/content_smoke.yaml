@@ -38,6 +38,9 @@ content_evaluation:
   # "the call did not fail".
   rubric_file: ../questions/tsr_cdss.rubric.yaml
   llm:
+    # openai here; `safechain` in the private environment, which routes the
+    # same call through the gateway. Set LLM_BACKEND to override without
+    # editing this file.
     backend: openai
     model: gpt-4.1
     temperature: 0

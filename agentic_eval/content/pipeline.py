@@ -46,7 +46,7 @@ from agentic_eval.content.report import (
 )
 from agentic_eval.content.verdicts import MUST_HAVE_VERDICTS
 from agentic_eval.content.verify import _normalize_fact_results
-from agentic_eval.judge import JudgeClient, OpenAIJudgeClient
+from agentic_eval.llm_judge import JudgeClient, OpenAIJudgeClient
 from agentic_eval.models import RECORD_SCHEMA
 from agentic_eval.layout import RunLayout
 

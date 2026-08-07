@@ -321,6 +321,13 @@ works if that already has them:
 export AGENTIC_SYS_PYTHON=~/.pyenv/versions/3.11.13/envs/autoAI/bin/python
 ```
 
+The judge is separate from the systems under test and has two transports:
+`openai` (default) and `safechain` for the private environment. Both present
+`.chat.completions.create`, so the judging code is identical either way — set
+`content_evaluation.llm.backend`, or `LLM_BACKEND=safechain`. SafeChain is
+constructed by AgenticEval rather than borrowed from the system being
+evaluated: a judge is not independent if a change to its subject can change it.
+
 Anything not passed falls back to the config. Names are validated *before*
 either system starts, so a typo costs a second rather than a ten-minute run —
 `agentic-eval validate --config <cfg> --question <name>` prints the plan alone.
