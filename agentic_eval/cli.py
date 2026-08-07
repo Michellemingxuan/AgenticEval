@@ -36,6 +36,14 @@ def _add_override_flags(parser: argparse.ArgumentParser) -> None:
         help="override experiment.repeats, the shared k",
     )
     parser.add_argument(
+        "--baseline-cwd", default=None,
+        help="checkout to run as the baseline, overriding systems.<baseline>.process.cwd",
+    )
+    parser.add_argument(
+        "--candidate-cwd", default=None,
+        help="checkout to run as the candidate, overriding systems.<candidate>.process.cwd",
+    )
+    parser.add_argument(
         "--question", action="append", default=None, dest="questions",
         metavar="NAME",
         help=(
@@ -73,6 +81,17 @@ def _apply_overrides(config, args):
         if repeats < 1:
             raise ValueError("--repeats must be at least 1")
         config.experiment["repeats"] = repeats
+    for flag, role in (("baseline_cwd", "baseline"), ("candidate_cwd", "candidate")):
+        cwd = getattr(args, flag, None)
+        if not cwd:
+            continue
+        name = config.experiment.get(role)
+        if name not in config.systems:
+            raise ValueError(
+                f"--{flag.replace('_', '-')} given, but experiment.{role} "
+                f"({name!r}) is not one of {sorted(config.systems)}"
+            )
+        config.systems[name].setdefault("process", {})["cwd"] = cwd
     questions = getattr(args, "questions", None)
     if questions:
         wanted = {

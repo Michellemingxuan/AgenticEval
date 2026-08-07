@@ -122,18 +122,6 @@ def _fmt_value(value: Any, kind: str) -> str:
     return f"{number:,.1f}"
 
 
-def _fmt_rate(value: Any, kind: str, count: Any, denominator: Any) -> str:
-    """A rate, with the claims it was computed over when those are known."""
-    shown = _fmt_value(value, kind)
-    if count is None or denominator in (None, 0):
-        return shown
-    return f"{_fmt_value(count, 'count')}/{_fmt_value(denominator, 'count')} ({shown})"
-
-
-def _pct(value: Any) -> str:
-    return "—" if value is None else f"{100 * float(value):.0f}%"
-
-
 def _delta_cell(
     baseline: Any, candidate: Any, higher_is_better: bool, kind: str = "pct",
 ) -> str:

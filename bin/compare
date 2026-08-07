@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# One comparison, end to end: run both systems, score the answers, build the
+# side-by-side page. Every knob is a flag, so a sweep never needs a new config.
+#
+#   bin/compare --config experiments/configs/series_abc.yaml \
+#               --question b2_tsr_cdss_reaction --question b4_abnormal_transactions \
+#               --repeats 1 --case-id 366132845011
+#
+# Anything not passed falls back to the config. `--question` may repeat or take
+# a comma-separated list; an unknown name fails before either system starts.
+set -euo pipefail
+
+CONFIG="" ; ARGS=() ; ENV_FILE="${AGENTIC_EVAL_ENV:-../AgenticSys_v2/.env}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)      CONFIG="$2"; ARGS+=(--config "$2"); shift 2 ;;
+    --env-file)    ENV_FILE="$2"; shift 2 ;;
+    --question|--case-id|--repeats|--mode|--baseline-cwd|--candidate-cwd)
+                   ARGS+=("$1" "$2"); shift 2 ;;
+    --skip-run)    SKIP_RUN=1; shift ;;
+    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)             echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+[[ -n "$CONFIG" ]] || { echo "--config is required" >&2; exit 2; }
+
+# The judge needs OPENAI_API_KEY; the shell usually has not got it.
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+: "${OPENAI_API_KEY:?set it, or point --env-file at a file that does}"
+
+echo "== plan"
+agentic-eval validate "${ARGS[@]}" | python3 -c '
+import json,sys; d=json.load(sys.stdin)
+print("   %d records over %s" % (d.get("planned_records", 0), d.get("mode", "?")))'
+
+echo "== run"
+OUT=$(agentic-eval run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
+
+echo "== score answers"
+agentic-eval evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT" | tail -1
+
+cat <<EOF
+
+== results in $OUT
+  runs.jsonl                     one record per answer: the answer, the team, the
+                                 evidence ledger, tokens, latency, memory offered
+  content/evaluations.jsonl      one record per answer, scored: claims, per-claim
+                                 grounding and routes, must-haves, oracles, metrics
+  content/answer_comparison.html the page — answers side by side, atomic facts with
+                                 their markers, metrics per question and overall
+  content/walkthrough.md         the same, as text: answer -> claims -> numbers
+  content/comparison.md          one scorecard table, both systems, every question
+  content/summary.json           aggregated metrics, for a script to read
+  metrics/                       consistency, memory and latency, per question
+  logs/                          each system's server log for the run
+EOF

@@ -254,20 +254,6 @@ def _bounded_ledger(ledger: list[dict[str, Any]], max_chars: int) -> list[dict[s
     return out
 
 
-def _tool_result_failed(evidence: dict[str, Any]) -> bool:
-    result = evidence.get("result")
-    if not isinstance(result, dict):
-        return False
-    status = _slug(result.get("status") or result.get("outcome"))
-    return bool(
-        result.get("error")
-        or result.get("unavailable") is True
-        or result.get("success") is False
-        or status in {"error", "failed", "failure", "timeout", "unavailable"}
-        or result.get("DEGRADED")
-    )
-
-
 def _call_signature(evidence: dict[str, Any]) -> str:
     """What was ASKED of the tool, never what came back.
 

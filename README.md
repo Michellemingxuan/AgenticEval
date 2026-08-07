@@ -7,10 +7,10 @@ Start with:
 
 ```bash
 python -m agentic_eval validate \
-  --config experiments/examples/compare_versions.example.yaml
+  --config experiments/templates/compare_versions.example.yaml
 
 python -m agentic_eval run \
-  --config experiments/examples/compare_versions.example.yaml
+  --config experiments/templates/compare_versions.example.yaml
 ```
 
 `experiment.repeats` is the shared repetition count `k`. Each system receives
@@ -43,7 +43,7 @@ For each required question, `memory_used` is `true` when the run records a
 memory-use signal and `false` otherwise. `memory_hit_rate` is the percentage of
 required runs where `memory_used` is true. Questions marked false or left
 unannotated are excluded. See
-[the memory question example](experiments/examples/questions.memory.example.yaml).
+[the memory question example](experiments/templates/questions.memory.example.yaml).
 
 See [the comparison framework guide](docs/agentic-eval-comparison-framework.md)
 for configuration, experiment design, metrics, and review workflow.
@@ -162,7 +162,7 @@ then point the evaluator at the resulting `runs.jsonl`:
 
 ```bash
 python -m agentic_eval evaluate-content \
-  --config experiments/examples/compare_versions.example.yaml \
+  --config experiments/templates/compare_versions.example.yaml \
   --runs experiments/results/<run-folder>/runs.jsonl
 ```
 
@@ -291,28 +291,53 @@ with pinned model, temperature, timeout, and retry settings. It does not import
 either AgenticSys checkout. The normal `OPENAI_API_KEY` environment variable is
 used unless `api_key_env`, `api_key`, or `base_url` is configured explicitly.
 
-## Running a subset
+## Running a comparison
 
-One config serves a whole sweep — questions, repeats, mode and case are
-per-invocation overrides, validated before either system is started, so a
-typo fails in a second rather than after a ten-minute run.
+`bin/compare` does the whole chain — run both systems, score the answers, build
+the page — and every knob is a flag, so a sweep never needs a new config file.
 
 ```bash
-pip install -e .            # puts `agentic-eval` on PATH
+pip install -e .          # puts `agentic-eval` on PATH
 
-# two questions, one repeat, from the full set
-agentic-eval run --config experiments/configs/series_abc.yaml \
-  --question b2_tsr_cdss_reaction --question b4_abnormal_transactions --repeats 1
-
-# see the plan without starting anything
-agentic-eval validate --config experiments/configs/series_abc.yaml --question b2_tsr_cdss_reaction
-
-# score the answers, then build the side-by-side page
-agentic-eval evaluate-content --config <cfg> --runs <run>/runs.jsonl --output-dir <run>
-agentic-eval compare-answers  --evaluations <run>/content/evaluations.jsonl --output-dir <where>
+bin/compare --config experiments/configs/series_abc.yaml \
+  --question b2_tsr_cdss_reaction --question b4_abnormal_transactions \
+  --repeats 1 --case-id 366132845011
 ```
 
-`runs.jsonl` carries a `record_schema`. When the adapter learns to capture a
-field the evaluator needs, the number is bumped and `evaluate-content` says so
-on an older run — a metric over a field that was never captured reads empty,
-which is otherwise indistinguishable from a real zero.
+| flag | changes |
+|---|---|
+| `--question` | which questions run; repeatable or comma-separated |
+| `--repeats` | k |
+| `--mode` | `cold` (reset each turn) or `stateful` (one session per repeat) |
+| `--case-id` | the case both systems analyse |
+| `--baseline-cwd` / `--candidate-cwd` | which two checkouts are compared |
+| `--env-file` | where `OPENAI_API_KEY` is read from |
+
+Anything not passed falls back to the config. Names are validated *before*
+either system starts, so a typo costs a second rather than a ten-minute run —
+`agentic-eval validate --config <cfg> --question <name>` prints the plan alone.
+
+## What a run leaves behind
+
+```
+runs.jsonl                      one record per answer: the answer, the team, the
+                                evidence ledger, tokens, latency, memory offered
+content/evaluations.jsonl       the same answers scored: claims, per-claim grounding
+                                and routes, must-haves, oracles, metrics
+content/answer_comparison.html  the page — answers side by side, atomic facts with
+                                their markers, metrics per question and overall
+content/walkthrough.md          the same as text: answer -> claims -> numbers
+content/comparison.md           one scorecard table, both systems, every question
+content/summary.json            aggregated metrics, for a script to read
+metrics/                        consistency, memory and latency, per question
+logs/                           each system's server log
+```
+
+The HTML page is built automatically at the end of `evaluate-content` — there is
+no separate step. `agentic-eval compare-answers --evaluations <file>` rebuilds it
+alone, which is what to use when only the rendering changed.
+
+Reading the page: **◆ factual** means the run recorded a route to operations on
+specific tables *and* that route answers the question asked; **◇ report** means
+the claim relays curated report material that resolves; **○** is neither. The
+repeat tabs switch the answers only — the metrics are totalled over every repeat.

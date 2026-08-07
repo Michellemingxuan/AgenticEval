@@ -8,7 +8,7 @@ normalized run record.
 The claim-level content layer is defined in
 [`content-evaluation-design.md`](content-evaluation-design.md). Its rubric
 shape is illustrated by
-[`experiments/examples/content_rubric.example.yaml`](../experiments/examples/content_rubric.example.yaml).
+[`experiments/templates/content_rubric.example.yaml`](../experiments/templates/content_rubric.example.yaml).
 
 For AgenticSys, the built-in `agenticsys_sse` adapter:
 
@@ -29,7 +29,7 @@ target's `config`; the evaluator core remains unchanged.
 ## Configuration
 
 Start from
-[`experiments/examples/compare_versions.example.yaml`](../experiments/examples/compare_versions.example.yaml).
+[`experiments/templates/compare_versions.example.yaml`](../experiments/templates/compare_versions.example.yaml).
 Each target can either be evaluator-managed:
 
 ```yaml
@@ -67,14 +67,14 @@ Validate without starting either version:
 
 ```bash
 python -m agentic_eval validate \
-  --config experiments/examples/compare_versions.example.yaml
+  --config experiments/templates/compare_versions.example.yaml
 ```
 
 Run the comparison:
 
 ```bash
 python -m agentic_eval run \
-  --config experiments/examples/compare_versions.example.yaml
+  --config experiments/templates/compare_versions.example.yaml
 ```
 
 ## Experimental convention
