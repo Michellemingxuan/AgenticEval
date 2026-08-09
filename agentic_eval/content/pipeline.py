@@ -37,10 +37,10 @@ from agentic_eval.content.prompts import (
 from agentic_eval.content.trace import (
     apply_trace_eligibility, audit_claim_traces, build_trace_view,
 )
-from agentic_eval.content.compare_view import (
+from agentic_eval.render.page import (
     find_run_summary, write_answer_comparison,
 )
-from agentic_eval.content.report import (
+from agentic_eval.render.markdown import (
     content_comparison_markdown, write_content_walkthrough,
     write_evidence_review_packets,
 )
@@ -341,6 +341,8 @@ class ContentEvaluator:
         return {
             "system": record.get("system"),
             "mode": record.get("mode"),
+            "case_id": record.get("case_id"),
+            "question_set": record.get("question_set"),
             "name": record.get("name"),
             "run_index": record.get("run_index"),
             "sequence_position": record.get("sequence_position"),
@@ -369,6 +371,20 @@ class ContentEvaluator:
         }
 
 
+def _repeats_in(records: list[dict[str, Any]]) -> int | None:
+    """How many repeats this runs.jsonl actually holds.
+
+    Distinct `run_index` values, so `repetitions_complete` asks the question
+    worth asking — was every answer that was RUN also scored — rather than
+    comparing against a config that may describe a different run entirely.
+    """
+    indices = {
+        row.get("run_index") for row in records
+        if row.get("run_index") is not None
+    }
+    return len(indices) or None
+
+
 def evaluate_runs_file(
     *, config: dict[str, Any], records: list[dict[str, Any]], output_dir: Path,
     baseline: str, candidate: str, rubric_by_name: dict[str, dict[str, Any]],
@@ -381,13 +397,15 @@ def evaluate_runs_file(
     evaluations = read_jsonl(out_path) if resume and out_path.exists() else []
     if not resume:
         out_path.write_text("", encoding="utf-8")
-    completed = {
-        (
-            row.get("system"), row.get("mode"), row.get("name"),
-            row.get("run_index"), row.get("sequence_position"),
+    # `case_id` is part of the identity: without it a multi-case run's second
+    # case looks already-evaluated to `--resume` and is silently skipped.
+    def identity(row: dict[str, Any]) -> tuple:
+        return (
+            row.get("system"), row.get("mode"), row.get("case_id"),
+            row.get("name"), row.get("run_index"), row.get("sequence_position"),
         )
-        for row in evaluations
-    }
+
+    completed = {identity(row) for row in evaluations}
     # A run captured before the adapter learned a field cannot be scored for
     # it. Say so once, plainly, rather than letting the metric read zero.
     stale = sorted({
@@ -411,22 +429,28 @@ def evaluate_runs_file(
                 f"no answers for {sorted(wanted)}; runs.jsonl has "
                 f"{sorted({str(r.get('name')) for r in records})}"
             )
-    eligible = [
-        row for row in eligible
-        if (
-            row.get("system"), row.get("mode"), row.get("name"),
-            row.get("run_index"), row.get("sequence_position"),
-        ) not in completed
-    ]
+    eligible = [row for row in eligible if identity(row) not in completed]
     if limit is not None:
         eligible = eligible[:limit]
     # The conversation each answer sits in, so a follow-up is judged against
     # what was already established rather than against its sentence alone.
+    #
+    # This is the JUDGE's context, not the system's — the system is reset per
+    # session and never sees another case. But the key must match the session
+    # exactly: `case_id` because two cases share a run_index, and
+    # `question_set` because each set is its own session and its
+    # `sequence_position` restarts at 1. Without the set, series D's cold
+    # question would be judged against series B's turns — the very context the
+    # run went to the trouble of withholding from the system.
+    def session_key(row: dict[str, Any]) -> tuple:
+        return (
+            row.get("system"), row.get("mode"), row.get("case_id"),
+            row.get("question_set"), row.get("run_index"),
+        )
+
     by_session: dict[tuple, list[dict[str, Any]]] = {}
     for row in records:
-        by_session.setdefault(
-            (row.get("system"), row.get("mode"), row.get("run_index")), [],
-        ).append(row)
+        by_session.setdefault(session_key(row), []).append(row)
     for turns in by_session.values():
         turns.sort(key=lambda row: row.get("sequence_position") or 0)
 
@@ -435,9 +459,7 @@ def evaluate_runs_file(
         position = record.get("sequence_position") or 0
         prior_turns = [
             {"question": row.get("question"), "answer": str(row.get("final_answer") or "")[:1200]}
-            for row in by_session.get(
-                (record.get("system"), record.get("mode"), record.get("run_index")), [],
-            )
+            for row in by_session.get(session_key(record), [])
             if (row.get("sequence_position") or 0) < position
         ]
         result = evaluator.evaluate(record, rubric, prior_turns=prior_turns)
@@ -450,7 +472,12 @@ def evaluate_runs_file(
         )
     summary = aggregate_content_evaluations(
         evaluations,
-        expected_repeats=(
+        # Counted from the RECORDS, not from the config's k. Scoring runs as a
+        # separate command against a runs.jsonl, and the config it reloads need
+        # not describe that file: a scoped run asks k=2 while the config still
+        # says 3, and the completeness check then failed a run that was whole.
+        # What was actually run is in the file; the config is a guess about it.
+        expected_repeats=_repeats_in(records) or (
             int(config["expected_repeats"])
             if config.get("expected_repeats") is not None else None
         ),

@@ -21,6 +21,65 @@ experiment:
   seed: 20260802
   output_dir: ../results
 
+  # RUN scopes pin the whole shape of a run — questions, k, cases, workers.
+  # `--scope smoke` is one word instead of a line of flags remembered
+  # correctly. Explicit flags still win over whatever a scope sets.
+  scopes:
+    # Exercises the whole pipeline — metrics, per-set tables, case and repeat
+    # tabs — on a fraction of the judge spend. 32 records against the full
+    # run's 216. Four questions across three sets, so the per-set sections
+    # have something to separate; k=2 and two cases so both selectors have
+    # something to switch between.
+    #
+    # This is a CHECK, not a measurement: k=2 over four questions is far too
+    # little to compare two systems on. Read it to confirm the chain works,
+    # then run the real thing.
+    #
+    # The selection is dependency-clean on purpose: b3's parent is b2 and both
+    # are here, while a1 and c1 stand alone. Dropping b2 would leave b3 asking
+    # about "the reacting period" with no turn that established one — the
+    # selection would be measuring itself, not the system.
+    smoke:
+      questions:
+        - a1_payment_returns_occurrence
+        - b2_tsr_cdss_reaction
+        - b3_bureau_during_reaction
+        - c1_report_spending_summary
+      repeats: 2
+      # Quoted: the second folder's name really does end in a space, and the
+      # system keys on the raw folder name.
+      cases: ["366132845011", "11854808010 "]
+
+  # QUESTION scopes select what is asked and NOTHING else — k, cases and
+  # workers stay exactly as set above, so every rate rests on the repeats this
+  # config intends. Use these when the numbers matter; use a run scope when the
+  # point is to spend little. A question scope that tried to set `repeats` or
+  # `cases` is refused rather than quietly honoured.
+  question_scopes:
+    # One series at a time, each a complete session with its chain intact.
+    series_a: [q0_off_domain_rejection, a1_payment_returns_occurrence,
+               a2_commercial_card_count, a3_commercial_card_balance,
+               a4_external_delinquency_coverage, a5_latest_fico_score,
+               a6_transactions_last_month]
+    series_b: [b1_case_overview, b2_tsr_cdss_reaction,
+               b3_bureau_during_reaction, b4_abnormal_transactions,
+               b5_connected_transactions, b6_default_pattern,
+               b7_intent_verdict, b8_contradicting_evidence,
+               b9_model_opportunities_in_context]
+    series_c: [c1_report_spending_summary]
+    series_d: [d1_model_opportunities_cold]
+    # The pair the D series exists for: B9 and D1 are the same question, asked
+    # with and without the eight turns before it. They sit in different sets,
+    # so they run as two separate sessions and the contrast survives. B9 needs
+    # its whole chain, which is why the series-B turns are all here.
+    cold_vs_warm:
+      questions: [b1_case_overview, b2_tsr_cdss_reaction,
+                  b3_bureau_during_reaction, b4_abnormal_transactions,
+                  b5_connected_transactions, b6_default_pattern,
+                  b7_intent_verdict, b8_contradicting_evidence,
+                  b9_model_opportunities_in_context,
+                  d1_model_opportunities_cold]
+
 # Owned by AgenticEval, not by the system under test. Both halves of the
 # suite, asked in one session: simple questions a script can settle, then
 # complex ones only a rubric can. `--question` selects a subset without

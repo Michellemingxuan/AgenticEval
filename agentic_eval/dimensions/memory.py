@@ -68,6 +68,15 @@ def section(rows: list[dict[str, Any]]) -> dict[str, Any]:
             next(iter(memory_annotations))
             if len(memory_annotations) == 1 else None
         ),
+        # A property of the QUESTION, so it counts once however many cases and
+        # repeats asked it. Summed over a system's groups this is "how many
+        # questions in the set need memory" — a fact about the suite, which is
+        # the only reading that stays stable as k or the case list changes.
+        # `memory_required_run_count` is the denominator behind `memory_hit_rate`
+        # and is kept for that, not for display.
+        "memory_required_question_count": (
+            1 if next(iter(memory_annotations), None) is True else 0
+        ),
         "memory_required_run_count": len(required_memory),
         "memory_used_count": sum(
             bool(row.get("memory_used")) for row in required_memory

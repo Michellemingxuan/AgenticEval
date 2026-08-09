@@ -306,12 +306,160 @@ bin/compare --config experiments/configs/series_abc.yaml \
 
 | flag | changes |
 |---|---|
+| `--scope` | a saved selection from `experiment.scopes`, e.g. `smoke` |
 | `--question` | which questions run; repeatable or comma-separated |
 | `--repeats` | k |
 | `--mode` | `cold` (reset each turn) or `stateful` (one session per repeat) |
-| `--case-id` | the case both systems analyse |
+| `--case-id` | the case both systems analyse; repeat it to cover several |
+| `--cases-from` | read the case id list from a data directory; run them all |
 | `--baseline-cwd` / `--candidate-cwd` | which two checkouts are compared |
 | `--env-file` | where `OPENAI_API_KEY` is read from |
+
+### Smoke run
+
+Before spending the judge budget on a full pass, check the whole chain on a
+fraction of it:
+
+```bash
+bin/compare --config experiments/configs/series_abcd.yaml --scope smoke
+```
+
+`--scope` applies a **run scope** — a saved preset that pins the whole shape of
+a run: questions, k, cases, workers. `smoke` is four questions across three
+sets at k=2 over both cases: **32 records against the full run's 216**, and
+still enough to exercise the per-set metrics tables and both the case and
+repeat selectors.
+
+Read a smoke run as a check that the chain works, not as a measurement — k=2
+over four questions is far too little to compare two systems on.
+
+### Question scopes
+
+A **question scope** narrows what is asked and nothing else. k, cases and
+workers stay exactly as the config has them, so every rate rests on the repeats
+the config intends:
+
+```bash
+bin/compare --config experiments/configs/series_abcd.yaml --question-scope series_b
+```
+
+| | `--scope` | `--question-scope` |
+|---|---|---|
+| questions | pinned | pinned |
+| k, cases, workers | pinned | **from the config** |
+| for | spending little | measuring a subset |
+
+`series_abcd.yaml` defines `series_a`…`series_d` and `cold_vs_warm` (B9 and D1
+— the same question with and without the eight turns before it, in two sets so
+they stay two sessions). A question scope carrying `repeats` or `cases` is
+refused rather than honoured: changing k there would hand back rates that look
+like the config's and are not, and nothing downstream would say so.
+
+Both flags are alternatives — a run scope already pins the questions.
+
+### Selecting questions checks the parent chain
+
+A follow-up asked without the turn it refers to has no referent — `b3` asks
+about "the reacting period" that `b2` established. The system answers something
+vague, every metric on it reads badly, and the conclusion drawn is about the
+selection rather than the system. So naming `b4` alone is refused, and the
+error names the whole chain:
+
+```
+follow-up question(s) selected without the turn they refer to:
+b3 needs b2, b4 needs b3. Add --question b2 --question b3
+```
+
+### Rescoring without re-running
+
+Metric artifacts are written once, by `run`. When a scoring bug is fixed
+afterwards the answers are still good — only the numbers derived from them are
+stale, and re-running both systems to correct arithmetic wastes the run and
+changes the sample, so the two readings stop being comparable.
+
+```bash
+python -m agentic_eval rescore --runs experiments/results/<run>/runs.jsonl
+```
+
+Recomputes `metrics/summary.json`, `comparison.json` and `comparison.md` in
+place from the answers already on disk, reading baseline/candidate from the
+run's `manifest.json`. Follow it with `compare-answers` to refresh the page.
+
+### Several cases in one run
+
+Every question is asked about every case, so a difference between the two
+systems can be told apart from a quirk of one customer's data — a candidate
+that wins on one case and loses on two has not won.
+
+```bash
+bin/compare --config experiments/configs/series_abcd.yaml \
+  --cases-from ../AgenticSys_v2/data_tables/real
+```
+
+`--cases-from` takes only the **id list** from that directory. It is not a data
+source: AgenticEval never reads a table, and each system answers about those
+ids using its own checkout's `data_tables/`. Listing from AgenticSys_v2 just
+asks "which cases exist?" — the baseline and the candidate still run on their
+own data.
+
+Metrics pool over cases and repeats alike; consistency is the exception, and is
+measured *within* each case before averaging, since two customers legitimately
+draw different specialists and different tables. The page gets a case selector
+above the repeat selector — together they pick which answers are on screen,
+while every metric stays totalled over all of them.
+
+### Question sets
+
+Each `questions_file` is a **set**, and a set is a conversation: in stateful
+mode it gets its own session, so questions in different sets never see each
+other's turns. Records carry `question_set`, and the page grows a metrics
+section per set alongside the overall one.
+
+This is what makes `series_d` work. D1 asks series B's final question ("Any
+model opportunities?") with none of B's context — run in one flat session it
+followed B9, the identical question, two turns later, so it measured the QA
+cache rather than cold discovery. As separate sets, D1 is turn 1 of its own
+conversation, and the judge's prior-turn context stops at the set boundary too.
+
+Set a `question_set:` key at the top of a questions file to name it something
+other than the filename.
+
+### Running sessions concurrently
+
+`--workers N` (or `experiment.workers`) runs N sessions at once. The unit of
+parallelism is the **session** — one (case, set, repeat) — so the questions
+inside one still go in the configured order, on one server, and a follow-up
+still lands after the turn it refers to.
+
+**Each worker starts its own server instance per system.** That is not a
+performance choice, it is required for correctness: the system under test keeps
+its data gateway and catalog as process-globals and re-scopes them to a case at
+the start of every turn, so two sessions sharing a process can execute against
+each other's tables. `server.py` documents the race itself:
+
+> turns on ONE case are serialized by `sess.turn_lock`, but two different
+> cases' turns can still interleave on these shared globals
+
+Worker *w* takes each system's configured port plus *w*, and shifts both
+`config.base_url` and `process.env.PORT` together — a mismatch is refused
+rather than silently health-checking against another worker's server. Space your
+systems' ports at least `workers` apart; a collision is caught before anything
+starts. The ceiling is 8, because N workers means N full servers per system.
+
+Two consequences worth knowing:
+
+- **Latency is measured under contention.** N servers share one machine, so the
+  numbers are comparable within the run but not against a serial one. The
+  manifest records `latency_measured_concurrently` so a later reader knows.
+- **Record order stays deterministic.** Results are reassembled in session
+  order, and each session's baseline/candidate ordering is seeded from its own
+  identity rather than drawn from one shared generator — so the same config and
+  seed produce the same `runs.jsonl` whatever order the workers finish in.
+
+Case ids are the data directory names **exactly** as they appear on disk, and
+one of the real ones ends in a space. Quote it (`--case-id '11854808010 '`), or
+let `--cases-from` find it: the system under test keys on the raw folder name,
+so a stripped id matches no case and the run completes with every answer empty.
 
 The system under test needs an interpreter carrying its own dependencies. Point
 `AGENTIC_SYS_PYTHON` at it — the configs fall back to `python3`, which only

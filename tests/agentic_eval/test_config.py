@@ -297,13 +297,15 @@ def test_no_shipped_config_pins_a_machine_specific_path():
     assert not offenders, offenders
 
 
-def test_safechain_binds_json_mode_and_runs_through_ainvoke():
+def test_safechain_binds_json_mode_and_runs_through_ainvoke(monkeypatch):
     """The private gateway is a transport swap, not a second judging path.
 
     Everything underneath is async — `amodel()` acquires a token over the
     network — so the client owns the sync bridge and the judge stays
     synchronous.
     """
+    import sys
+    import types
     from types import SimpleNamespace
     from agentic_eval.llm_judge import SafeChainClient
 
@@ -311,7 +313,7 @@ def test_safechain_binds_json_mode_and_runs_through_ainvoke():
 
     class FakeChain:
         async def ainvoke(self, payload):
-            seen["payload"] = payload
+            seen["payload"] = payload["messages"]
             return SimpleNamespace(
                 content='{"claims": []}',
                 usage_metadata={"input_tokens": 11, "output_tokens": 2,
@@ -322,6 +324,26 @@ def test_safechain_binds_json_mode_and_runs_through_ainvoke():
         def bind(self, **kwargs):
             seen["bound"] = kwargs
             return FakeChain()
+
+    # Stand in for the private environment's compliance template, which the
+    # client now REQUIRES rather than falling back past.
+    class FakeTemplate:
+        @staticmethod
+        def from_messages(_):
+            return FakeTemplate()
+
+        def __or__(self, other):
+            return other
+
+    # setitem, not assignment: these must not leak into the next test, which
+    # asserts the client REFUSES when they are absent.
+    monkeypatch.setitem(sys.modules, "safechain", types.ModuleType("safechain"))
+    monkeypatch.setitem(sys.modules, "safechain.prompts",
+                        types.SimpleNamespace(ValidChatPromptTemplate=FakeTemplate))
+    monkeypatch.setitem(sys.modules, "langchain_core",
+                        types.ModuleType("langchain_core"))
+    monkeypatch.setitem(sys.modules, "langchain_core.prompts",
+                        types.SimpleNamespace(MessagesPlaceholder=lambda name: name))
 
     client = SafeChainClient("gpt-4.1", timeout_s=60.0)
     client._llm = FakeModel()                       # skip the network build
@@ -360,3 +382,24 @@ def test_run_tools_is_gone():
     import agentic_eval.llm_judge as j
     assert not hasattr(j.OpenAIJudgeClient, "run_tools")
     assert "run_tools" not in pathlib.Path("agentic_eval/llm_judge.py").read_text()
+
+
+def test_safechain_refuses_to_run_without_the_compliance_template():
+    """No silent bypass. The template is why this backend exists.
+
+    `ValidChatPromptTemplate.format_prompt` is template-time, so a bare
+    `ainvoke` skips it. Falling back to invoking the model directly would keep
+    the run working while dropping compliance, and nothing downstream could
+    tell the difference.
+    """
+    import pytest
+    from types import SimpleNamespace
+    from agentic_eval.llm_judge import SafeChainClient
+
+    client = SafeChainClient("gpt-4.1", timeout_s=60.0)
+    client._llm = SimpleNamespace(bind=lambda **kw: SimpleNamespace())
+    with pytest.raises(RuntimeError, match="compliance"):
+        client.chat.completions.create(
+            model="gpt-4.1", messages=[{"role": "user", "content": "u"}],
+            response_format={"type": "json_object"},
+        )

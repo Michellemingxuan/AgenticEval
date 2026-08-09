@@ -4,19 +4,44 @@ from __future__ import annotations
 import json
 import random
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from agentic_eval.adapters import build_adapter
+from agentic_eval.cases import describe_case
+from agentic_eval.workers import assert_workers_are_isolated, bind_to_worker
 from agentic_eval.config import EvalConfig
 from agentic_eval.content import evaluate_runs_file
 from agentic_eval.models import AdapterResult, RunRequest
 from agentic_eval.process import ManagedProcess
-from agentic_eval.report import comparison_markdown, write_blind_review
+from agentic_eval.render.run_summary import comparison_markdown, write_blind_review
 from agentic_eval.layout import RunLayout
 from agentic_eval.scoring import aggregate, compare, score_content, score_memory
+
+
+@dataclass(frozen=True)
+class Session:
+    """One conversation: a case, a question set, and a repeat of it.
+
+    The unit of parallelism. Its questions are asked in order on one server
+    instance, so a follow-up still lands after the turn it refers to.
+    """
+
+    case_id: str | None
+    question_set: str
+    run_index: int
+    mode: str
+    questions: list
+
+    @property
+    def key(self) -> tuple:
+        """Identity used to seed this session's system ordering."""
+        return (self.mode, self.case_id, self.question_set, self.run_index)
 
 
 class ComparisonRunner:
@@ -30,24 +55,64 @@ class ComparisonRunner:
         self.layout = RunLayout(self.output_dir).ensure()
         self.raw_path = self.layout.runs
         self.raw_path.write_text("", encoding="utf-8")
-        self.adapters = {
-            name: build_adapter(target["adapter"], target.get("config") or {})
-            for name, target in config.systems.items()
-        }
-        self.processes = {
-            name: ManagedProcess(name, target["process"], self.output_dir)
-            for name, target in config.systems.items() if target.get("process")
-        }
-        self.random = random.Random(experiment["seed"])
+        self.workers = max(1, int(experiment.get("workers", 1) or 1))
+        # One server instance per worker. Sharing a process would let two
+        # sessions interleave on the system's process-global gateway — see
+        # `workers.py`. Worker 0 is the config exactly as written.
+        pool = [
+            {
+                name: bind_to_worker(name, target, worker)
+                for name, target in config.systems.items()
+            }
+            for worker in range(self.workers)
+        ]
+        assert_workers_are_isolated(pool)
+        self.pool = [
+            {
+                name: build_adapter(target["adapter"], target.get("config") or {})
+                for name, target in systems.items()
+            }
+            for systems in pool
+        ]
+        self.processes = [
+            ManagedProcess(
+                f"{name}.w{worker}" if self.workers > 1 else name,
+                target["process"], self.output_dir,
+            )
+            for worker, systems in enumerate(pool)
+            for name, target in systems.items() if target.get("process")
+        ]
+        self.seed = int(experiment["seed"])
+        # Both guard shared state that concurrent workers touch. Interleaved
+        # writes would corrupt runs.jsonl into unparseable half-lines.
+        self._write_lock = threading.Lock()
+        self._print_lock = threading.Lock()
 
     def _persist(self, record: dict[str, Any]) -> None:
-        with self.raw_path.open("a", encoding="utf-8") as fh:
+        with self._write_lock, self.raw_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
 
-    def _one(self, system: str, request: RunRequest) -> dict[str, Any]:
+    def _order(self, key: tuple) -> list[str]:
+        """System order for one session, shuffled deterministically.
+
+        Derived from the seed and the session's own identity rather than drawn
+        from one shared Random: with several workers the draw order depends on
+        which thread got there first, so a shared generator makes the run
+        unreproducible even at a fixed seed.
+        """
+        systems = list(self.config.systems)
+        # Seeded from the repr, not `hash()`: string hashing is salted per
+        # process, so a hash-seeded shuffle would differ between two runs of
+        # the same config and seed.
+        random.Random(repr((self.seed, key))).shuffle(systems)
+        return systems
+
+    def _one(
+        self, system: str, request: RunRequest, worker: int = 0,
+    ) -> dict[str, Any]:
         started = time.perf_counter()
         try:
-            result = self.adapters[system].run(
+            result = self.pool[worker][system].run(
                 request, float(self.config.experiment["timeout_s"])
             )
         except Exception as exc:  # one target failure must not erase the trial
@@ -60,55 +125,137 @@ class ComparisonRunner:
         record.update(score_memory(record))
         record.update(score_content(record))
         self._persist(record)
-        print(
-            f"  {system:<14} {record['outcome']:<12} "
-            f"{record['elapsed_seconds']:>7.2f}s  "
-            f"{request.question.name} #{request.run_index}"
+        case = (
+            f"  [{describe_case(request.case_id)}]"
+            if len(self._cases) > 1 else ""
         )
+        tag = f"w{worker} " if self.workers > 1 else ""
+        with self._print_lock:
+            print(
+                f"  {tag}{system:<14} {record['outcome']:<12} "
+                f"{record['elapsed_seconds']:>7.2f}s  "
+                f"{request.question.name} #{request.run_index}{case}"
+            )
         return record
 
-    def _reset(self, system: str) -> None:
-        self.adapters[system].reset()
+    def _reset(self, system: str, case_id: str | None, worker: int) -> None:
+        self.pool[worker][system].reset(case_id)
+
+    @property
+    def _cases(self) -> list[str | None]:
+        """The cases to ask, resolved by `load_config`; `[None]` if unset."""
+        return self.config.experiment.get("cases") or [None]
+
+    def _question_sets(self) -> list[tuple[str, list]]:
+        """Questions grouped into sets, in the order the config lists them.
+
+        A set is a conversation. In stateful mode each one gets its own
+        session, so a question that must be asked cold really is asked cold —
+        series D asks series B's final question with none of B's context, and
+        running both in one session made it a restatement of B9 two turns
+        later rather than the discovery probe it exists to be.
+        """
+        ordered: dict[str, list] = {}
+        for question in self.config.questions:
+            ordered.setdefault(question.question_set or "questions", []).append(
+                question
+            )
+        return list(ordered.items())
+
+    def _sessions(self, mode: str) -> list[Session]:
+        """Every session this mode runs, as independent units of work.
+
+        A SESSION is the unit — never a question. The questions inside one are
+        a conversation and must be asked in the configured order on one server,
+        so parallelism is across sessions and strictly serial within them.
+
+        Cold gives each question its own session, which is what "reset before
+        every turn" means. Stateful gives each question SET one, so a set's
+        turns share history and no other set's turns are in scope.
+        """
+        repeats = range(1, self.config.experiment["repeats"] + 1)
+        if mode == "cold":
+            return [
+                Session(case_id, "", run_index, "cold", [question])
+                for case_id in self._cases
+                for question in self.config.questions
+                for run_index in repeats
+            ]
+        return [
+            Session(case_id, set_name, run_index, "stateful", questions)
+            for case_id in self._cases
+            for set_name, questions in self._question_sets()
+            for run_index in repeats
+        ]
+
+    def _run_session(self, session: Session, worker: int) -> list[dict[str, Any]]:
+        """One session, both systems, questions in the configured order."""
+        records = []
+        for system in self._order(session.key):
+            self._reset(system, session.case_id, worker)
+            for position, question in enumerate(session.questions, 1):
+                records.append(self._one(
+                    system,
+                    RunRequest(
+                        question, session.run_index, session.mode,
+                        # Cold turns are not a conversation, so they carry no
+                        # position — the same as before sessions existed.
+                        position if session.mode == "stateful" else None,
+                        case_id=session.case_id,
+                    ),
+                    worker,
+                ))
+        return records
+
+    def _execute(self, mode: str) -> list[dict[str, Any]]:
+        sessions = self._sessions(mode)
+        if self.workers == 1:
+            return [
+                record for session in sessions
+                for record in self._run_session(session, 0)
+            ]
+        # Each worker owns one server instance per system for the whole run, so
+        # the worker index IS the slot: handing sessions to a shared pool would
+        # let two of them land on one server and interleave there.
+        print(
+            f"  {len(sessions)} sessions over {self.workers} workers "
+            f"({mode}); questions stay in order within each"
+        )
+        results: list[list[dict[str, Any]]] = [[] for _ in sessions]
+
+        def run_slot(worker: int) -> None:
+            for index in range(worker, len(sessions), self.workers):
+                results[index] = self._run_session(sessions[index], worker)
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            list(pool.map(run_slot, range(self.workers)))
+        # Reassembled in session order, so runs.jsonl reads the same whatever
+        # order the workers happened to finish in.
+        return [record for group in results for record in group]
 
     def _cold(self) -> list[dict[str, Any]]:
-        systems = list(self.config.systems)
-        records = []
-        for question in self.config.questions:
-            for run_index in range(1, self.config.experiment["repeats"] + 1):
-                order = list(systems)
-                self.random.shuffle(order)
-                for system in order:
-                    self._reset(system)
-                    records.append(self._one(
-                        system,
-                        RunRequest(question, run_index, "cold"),
-                    ))
-        return records
+        return self._execute("cold")
 
     def _stateful(self) -> list[dict[str, Any]]:
-        systems = list(self.config.systems)
-        records = []
-        for run_index in range(1, self.config.experiment["repeats"] + 1):
-            order = list(systems)
-            self.random.shuffle(order)
-            for system in order:
-                self._reset(system)
-                for position, question in enumerate(self.config.questions, 1):
-                    records.append(self._one(
-                        system,
-                        RunRequest(question, run_index, "stateful", position),
-                    ))
-        return records
+        return self._execute("stateful")
 
     def _start(self) -> None:
-        for name, adapter in self.adapters.items():
-            if name in self.processes:
-                self.processes[name].start(adapter.healthcheck)
-            else:
-                adapter.healthcheck()
+        started = {process.name for process in self.processes}
+        for worker, adapters in enumerate(self.pool):
+            for name, adapter in adapters.items():
+                tag = f"{name}.w{worker}" if self.workers > 1 else name
+                process = next(
+                    (p for p in self.processes if p.name == tag), None,
+                )
+                if process is not None:
+                    process.start(adapter.healthcheck)
+                elif tag not in started:
+                    # No process to manage: the server is already running, so
+                    # just confirm the worker's own port answers.
+                    adapter.healthcheck()
 
     def _stop(self) -> None:
-        for process in reversed(list(self.processes.values())):
+        for process in reversed(self.processes):
             process.stop()
 
     def run(self) -> Path:
@@ -182,6 +329,18 @@ class ComparisonRunner:
             "seed": self.config.experiment["seed"],
             "mode": self.config.experiment["mode"],
             "repeats": self.config.experiment["repeats"],
+            "cases": self._cases,
+            "workers": self.workers,
+            # Latency was measured under contention when this is > 1: N servers
+            # per system shared one machine, so the numbers are comparable
+            # within the run but not against a serial one.
+            "latency_measured_concurrently": self.workers > 1,
+            # Each set is a separate session in stateful mode, so this records
+            # how the conversation was actually cut up.
+            "question_sets": {
+                name: [question.name for question in questions]
+                for name, questions in self._question_sets()
+            },
             "question_count": len(self.config.questions),
             "n_records": len(records),
             "content_evaluation": {

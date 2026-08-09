@@ -1,7 +1,7 @@
 """Per-question aggregation across repeats, and baseline/candidate comparison.
 
 This module owns only composition. Each metric family lives in its own module
-under `agentic_eval.modules`, so a dimension can be read, tested, or selected
+under `agentic_eval.scoring`, so a dimension can be read, tested, or selected
 without the others.
 """
 from __future__ import annotations
@@ -12,9 +12,9 @@ from collections import defaultdict
 from typing import Any
 
 from agentic_eval.common.stats import _percentile
-from agentic_eval.modules import EVAL_MODULES, memory, resolve_modules
-from agentic_eval.modules.content import score_content
-from agentic_eval.modules.memory import score_memory
+from agentic_eval.dimensions import EVAL_MODULES, memory, resolve_modules
+from agentic_eval.dimensions.content import score_content
+from agentic_eval.dimensions.memory import score_memory
 
 __all__ = ["aggregate", "compare", "score_content", "score_memory",
            "SECTION_BUILDERS"]
@@ -173,13 +173,19 @@ def _paired_metrics(
     records: list[dict[str, Any]], *, baseline: str, candidate: str,
     mode: str, name: str, seed: int,
 ) -> dict[str, Any]:
-    pairs: dict[tuple[Any, Any], dict[str, dict]] = defaultdict(dict)
+    pairs: dict[tuple, dict[str, dict]] = defaultdict(dict)
     for row in records:
         if row.get("mode") != mode or row.get("name") != name:
             continue
         if row.get("system") not in {baseline, candidate}:
             continue
-        key = (row.get("run_index"), row.get("sequence_position"))
+        # Case is part of the pairing: without it the two cases' rows for the
+        # same repeat overwrite each other, halving the pairs and comparing
+        # whichever case happened to be written last.
+        key = (
+            row.get("case_id"), row.get("run_index"),
+            row.get("sequence_position"),
+        )
         pairs[key][row["system"]] = row
     complete = [
         pair for pair in pairs.values() if baseline in pair and candidate in pair

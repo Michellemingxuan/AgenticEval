@@ -16,8 +16,14 @@ class SystemAdapter(ABC):
         """Raise when the target is not ready."""
 
     @abstractmethod
-    def reset(self) -> None:
-        """Clear target conversation state before a cold run/sequence."""
+    def reset(self, case_id: str | None = None) -> None:
+        """Clear target conversation state before a cold run/sequence.
+
+        `case_id` names the case whose state to clear. A multi-case run moves
+        between cases, and resetting the previous one would leave the next
+        carrying history from an earlier repeat — the defect a cold run exists
+        to rule out. `None` means the adapter's configured case.
+        """
 
     @abstractmethod
     def run(self, request: RunRequest, timeout_s: float) -> AdapterResult:

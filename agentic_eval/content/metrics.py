@@ -118,6 +118,10 @@ def calculate_content_metrics(
     #
     # `not_applicable` is excluded from BOTH sides — a point the question does
     # not raise must not count against the answer.
+    # No weights. Every applicable point counts once and scores 1, 0.5 or 0 —
+    # nothing in any rubric has ever set a `weight`, so multiplying by one
+    # implied a scheme that does not exist and made the numbers look weighted
+    # when they were not.
     credits = {"full": 1.0, "partial": 0.5, "miss": 0.0}
     mh_numerator = mh_denominator = 0.0
     mh_counts = {name: 0 for name in MUST_HAVE_VERDICTS}
@@ -125,9 +129,8 @@ def calculate_content_metrics(
         verdict = row.get("verdict", "miss")
         mh_counts[verdict] = mh_counts.get(verdict, 0) + 1
         if verdict in credits:
-            weight = float(row.get("weight") or 1)
-            mh_numerator += credits[verdict] * weight
-            mh_denominator += weight
+            mh_numerator += credits[verdict]
+            mh_denominator += 1
 
     # ---- oracles -----------------------------------------------------------
     # One answer, one verdict: the question was answered correctly if a script
@@ -208,8 +211,10 @@ def calculate_content_metrics(
         "evidence_resolution_counts": resolution_counts,
         "factual_counts": verdict_counts,
         "must_have_counts": mh_counts,
-        "must_have_hit_weight": mh_numerator,
-        "must_have_total_weight": mh_denominator,
+        # Credit earned over points applicable — "weight" was a misnomer once
+        # the multiplier went.
+        "must_have_credit": mh_numerator,
+        "must_have_points": mh_denominator,
         "expected_answer_counts": oracle_counts,
         # A rubric point marked critical that did not hold. Not a rate: one
         # critical failure is a finding on its own, and dividing it by however

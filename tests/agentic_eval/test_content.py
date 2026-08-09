@@ -1,14 +1,13 @@
 import json
 
 from agentic_eval.layout import RunLayout
+from agentic_eval.render import write_content_walkthrough, content_walkthrough_markdown
 from agentic_eval.content import (
     _evidence_float,
     ContentEvaluator,
     aggregate_content_evaluations,
     build_evidence_ledger,
     calculate_content_metrics,
-    content_walkthrough_markdown,
-    write_content_walkthrough,
     evaluate_runs_file,
 )
 
@@ -124,11 +123,42 @@ def test_content_metrics_are_aggregated_across_the_same_k_runs():
     assert group["repetitions_complete"] is True
     assert group["grounded_rate"] == 0.5
     assert distribution["values_by_run"] == [
-        {"run_index": 1, "value": 1.0},
-        {"run_index": 2, "value": 0.5},
-        {"run_index": 3, "value": 0.0},
+        {"case_id": None, "run_index": 1, "value": 1.0},
+        {"case_id": None, "run_index": 2, "value": 0.5},
+        {"case_id": None, "run_index": 3, "value": 0.0},
     ]
     assert distribution["stdev"] == 0.5
+
+
+def test_content_metrics_pool_over_cases_and_completeness_counts_them():
+    """Two cases x two repeats is a complete evaluation, not a half-done one.
+
+    `repetitions_complete` compared against `expected_repeats` alone, so every
+    multi-case run declared itself partial while the metrics it reported were
+    in fact whole.
+    """
+    rows = [
+        {
+            "system": "new", "mode": "cold", "name": "q",
+            "case_id": case, "run_index": index,
+            "metrics": {"grounded_rate": value},
+        }
+        for case, index, value in (
+            ("case_a", 1, 1.0), ("case_a", 2, 0.5),
+            ("case_b", 1, 0.5), ("case_b", 2, 0.0),
+        )
+    ]
+    group = aggregate_content_evaluations(rows, expected_repeats=2)["groups"][0]
+    assert group["case_ids"] == ["case_a", "case_b"]
+    assert group["n_runs"] == 4
+    assert group["expected_rows"] == 4
+    assert group["repetitions_complete"] is True
+    assert group["grounded_rate"] == 0.5
+    # Grouped by case, then by repeat within it.
+    assert [
+        (item["case_id"], item["run_index"])
+        for item in group["metric_distributions"]["grounded_rate"]["values_by_run"]
+    ] == [("case_a", 1), ("case_a", 2), ("case_b", 1), ("case_b", 2)]
 
 
 def test_content_evaluator_uses_baseline_must_haves_and_python_trace_check():
@@ -1197,7 +1227,7 @@ def test_walkthrough_marks_each_step_of_the_cascade(tmp_path):
     body = content_walkthrough_markdown(evaluation)
     assert "### 1. Raw final answer" in body
     assert "0 returned payments." in body
-    assert "### 2. Atomic facts" in body
+    assert "### 2. Claims" in body
     # num=yes, trc=yes, tul=yes, grounding=primary
     assert "| ◆ | ✓ |" in body
     assert "### 3. Numbers" in body
@@ -2563,3 +2593,46 @@ def test_no_memory_offered_costs_no_call():
     assert "memory_leverage" not in [c["task"] for c in judge.calls]
     assert result["memory_leverage"]["asked"] is False
     assert result["metrics"]["memory_leverage_rate"] is None
+
+
+def test_set_ratios_match_the_viewers_content_metrics():
+    """Two lists, one meaning — drift must fail loudly, not show two numbers.
+
+    `render` cannot import `content` at module level without a cycle, so the
+    count pairs are declared twice. If they disagree, the per-set table and the
+    overview report different values for the same metric and neither is wrong
+    on its face.
+    """
+    from agentic_eval.content.aggregate import SET_RATIOS
+    from agentic_eval.render.page import _CONTENT_METRICS
+
+    viewer = {(n, d) for n, d, *_ in _CONTENT_METRICS}
+    ours = {(n, d) for _label, n, d in SET_RATIOS}
+    assert ours == viewer, (
+        f"only in aggregate: {ours - viewer}; only in page: {viewer - ours}"
+    )
+
+
+def test_a_report_agents_prose_is_not_report_provenance():
+    """The specialist runs whether or not a report exists.
+
+    On a case whose report folder held nothing but PNG charts, `previous` ran
+    `report_agent` anyway and it answered "Total spend, spend frequency and
+    temporal distribution are analyzed in the reviewed reports". Seven claims
+    were credited as report-grounded on that sentence, with no file read
+    anywhere in the run. Cite what HELD the material, not who summarised it.
+    """
+    from agentic_eval.content.evidence import _is_report_evidence
+
+    # The fabricated case: the agent's own summary, no read behind it.
+    assert not _is_report_evidence(
+        {"source_type": "agent_result", "tool": "report_agent"}
+    )
+    # A genuine read still counts, however it is labelled.
+    assert _is_report_evidence({"source_type": "tool_result", "tool": "fs_read_file"})
+    assert _is_report_evidence({"source_type": "tool_result", "tool": "report_agent"})
+    assert _is_report_evidence({"source_type": "report", "tool": "anything"})
+    # A live measurement is never report material.
+    assert not _is_report_evidence(
+        {"source_type": "tool_result", "tool": "query_table"}
+    )

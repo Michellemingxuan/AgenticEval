@@ -154,17 +154,24 @@ class SafeChainClient:
         try:
             from safechain.prompts import ValidChatPromptTemplate  # type: ignore[import-not-found]
             from langchain_core.prompts import MessagesPlaceholder  # type: ignore[import-not-found]
-        except ImportError:  # pragma: no cover - private environment only
-            chain = bound
-        else:
-            chain = ValidChatPromptTemplate.from_messages(
-                [MessagesPlaceholder("messages")],
-            ) | bound
+        except ImportError as exc:  # pragma: no cover - private environment only
+            # No silent fallback to invoking the model directly. The template
+            # is in the chain for COMPLIANCE — its `format_prompt` override is
+            # template-time, and a bare `ainvoke` skips it. Quietly bypassing
+            # it would keep the run working while dropping the one thing this
+            # backend exists to guarantee, and nothing downstream could tell.
+            raise RuntimeError(
+                "backend: safechain requires safechain.prompts."
+                "ValidChatPromptTemplate and langchain_core.prompts."
+                "MessagesPlaceholder. The template carries compliance and is "
+                "not optional; refusing to run without it."
+            ) from exc
+        chain = ValidChatPromptTemplate.from_messages(
+            [MessagesPlaceholder("messages")],
+        ) | bound
         payload = [(str(m.get("role")), str(m.get("content"))) for m in messages]
         return await asyncio.wait_for(
-            chain.ainvoke({"messages": payload}) if chain is not bound
-            else chain.ainvoke(payload),
-            timeout=self._timeout_s,
+            chain.ainvoke({"messages": payload}), timeout=self._timeout_s,
         )
 
 

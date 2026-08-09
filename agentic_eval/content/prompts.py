@@ -319,6 +319,24 @@ before you rule.
     range. If you genuinely cannot tell whether the episode chosen is the one
     the case is about, return UNAVAILABLE, never NO.
 
+  * The question NAMES A REFERENCE CONDITION and asks about something else in
+    relation to it: "While the TSR and CDSS were reacting in 2025/2026, how was
+    the bureau profile?" The reference (the TSR/CDSS reaction) is PART OF THE
+    QUESTION, not a rival subject. A claim that establishes it, or that states
+    how the asked-about subject stands against it, is ON subject -> YES.
+
+      "TSR peaked at 26.4 in May 2025 (exceeding the risky threshold of 20),
+      but this internal signal was not accompanied by adverse bureau trends."
+
+    is YES: it names the reaction the question refers to and reports the
+    bureau profile against it. That contrast IS the answer. Ruling it NO
+    because "the claim is about TSR, not the bureau profile" mistakes the
+    question's own premise for a different question.
+
+    Still NO: a claim that stays WHOLLY on the reference and never reaches the
+    asked-about subject. "TSR peaked at 26.4 in May 2025." on its own restates
+    the premise and answers nothing about the bureau profile.
+
 A reason of the form "this covers the relevant window" is only valid if you
 have said WHICH window the question is about and shown the route matches it.
 "The relevant window (2024-05)" is not a finding when the episode is 2025-05;

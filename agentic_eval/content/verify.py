@@ -29,6 +29,9 @@ from agentic_eval.content.evidence import (
 from agentic_eval.content.numeric import (
     _RELATIONAL_CLAIM_TYPES, _RELATION_OPERATORS, _operand_values, _operation,
     _resolve_relation_side, _satisfies, _written_tolerance,
+    comparison_variants as _comparison_variants,
+    is_period_expression as _is_period_expression,
+    infer_comparator as _infer_comparator,
 )
 from agentic_eval.content.verdicts import (
     FACT_VERDICTS,
@@ -62,6 +65,11 @@ JUDGE_ERROR_FAILURES = {
     "agent_unverifiable",     # searched, and would not commit to a reading
     "agent_citation_unfound", # cited a snippet that is not in that evidence
     "agent_value_absent",     # the figure is not in the snippet it cited
+    # A period, not a quantity: "mid-2024", "2025-02 to 2025-05". The numeric
+    # parser turns these into nonsense (-2024.0) and then reports the nonsense
+    # as unlocatable. Whether the period is right is a real question, but not
+    # one the NUMERIC trace can answer, so it is excluded rather than charged.
+    "not_a_quantity",
 }
 
 #: Failures that ARE evidence about the system.
@@ -317,20 +325,42 @@ def _normalize_fact_results(
                 _written_tolerance(mention.get("written")),
                 1e-12,
             )
-            comparator = str(mention.get("comparator") or "==")
+            written = mention.get("written")
+            # "all above 720" is a bound, not an equality; read as `==` it was
+            # a mismatch against the 721 that proves it.
+            if _is_period_expression(written, mention.get("measures")):
+                # Decided before anything is parsed: reading "mid-2024" as a
+                # number is what produced the bad verdict in the first place.
+                number_results.append({
+                    "written_value": mention.get("written"),
+                    "measures": mention.get("measures"),
+                    "json_path": link.get("json_path"),
+                    "answer_value": None,
+                    "evidence_value": None,
+                    "trace_kind": trace_kind,
+                    "located_in_tool_output": False,
+                    "traceable_to_tool_output": False,
+                    "grounded_in_tool_result": False,
+                    "deterministically_correct": None,
+                    "trace_failure": "not_a_quantity",
+                })
+                continue
+            comparator = _infer_comparator(
+                written, str(mention.get("comparator") or "=="),
+            )
             correct = (
                 resolved and expected is not None and computed is not None
                 and _satisfies(comparator, expected, computed, tolerance)
             )
-            # A share is written "16%" and stored either as 16.0 (percent) or
-            # 0.16 (fraction), and the answer's figure is consistent with both.
-            # Without this the scale difference reads as a wrong number.
-            if (
-                not correct and resolved and expected is not None
-                and computed is not None and "%" in str(mention.get("written") or "")
-            ):
-                correct = _satisfies(
-                    comparator, expected * 100.0, computed, tolerance * 100.0,
+            # Only after the exact reading fails: the same figure written on a
+            # different scale ("36%" vs 0.3603) or without its sign ("declined
+            # by 2.2%" vs -0.022). A real disagreement survives every variant.
+            if not correct and resolved and expected is not None and computed is not None:
+                correct = any(
+                    _satisfies(comparator, want, got, tol)
+                    for want, got, tol in _comparison_variants(
+                        written, expected, computed, tolerance,
+                    )
                 )
             # "Traceability" means an actual system tool result, not a canonical
             # fact or a specialist's prose summary.

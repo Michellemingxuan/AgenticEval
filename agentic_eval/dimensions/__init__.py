@@ -4,7 +4,7 @@ Each exposes `section(rows)` returning that dimension's metrics for the k
 repeats of a single system/mode/question, so `scoring.aggregate` composes them
 rather than owning them, and a caller can select dimensions by name.
 """
-from agentic_eval.modules import consistency, content, latency, memory
+from agentic_eval.dimensions import consistency, content, latency, memory
 
 #: Dimensions selectable by name, e.g. via `--eval-module`.
 EVAL_MODULES = {

@@ -182,3 +182,116 @@ def _resolve_relation_side(
     literal = spec.get("value") if isinstance(spec, dict) else spec
     return _safe_float(literal), "literal", None, False
 
+
+
+#: Words that make a figure a BOUND rather than an equality. "all above 720" is
+#: satisfied by 721; read as `==` it was a mismatch against the very evidence
+#: that proves it.
+_LOWER_BOUND = re.compile(
+    r"\b(above|over|exceed\w*|greater than|more than|at least|no less than)\b",
+    re.I,
+)
+_UPPER_BOUND = re.compile(
+    r"\b(below|under|less than|fewer than|at most|no more than)\b", re.I,
+)
+
+
+def infer_comparator(written: Any, comparator: str) -> str:
+    """Upgrade `==` to a bound when the answer's own words state one."""
+    if comparator not in {"==", ""}:
+        return comparator
+    text = str(written or "")
+    if _LOWER_BOUND.search(text):
+        return ">="
+    if _UPPER_BOUND.search(text):
+        return "<="
+    return comparator or "=="
+
+
+#: Direction the answer committed to, if any. Only the figure's own text is
+#: available here, so this is a leading sign or an explicit word — absent
+#: either, the answer stated a size and not a direction.
+_FALLING = re.compile(r"^\s*-|\b(decline\w*|decrease\w*|fell|fall\w*|drop\w*|down)\b", re.I)
+_RISING = re.compile(r"^\s*\+|\b(rose|rise\w*|increase\w*|grew|grow\w*|up)\b", re.I)
+
+
+def _stated_direction(text: str) -> int | None:
+    if _FALLING.search(text):
+        return -1
+    if _RISING.search(text):
+        return 1
+    return None
+
+
+def comparison_variants(
+    written: Any, expected: float, computed: float, tolerance: float,
+):
+    """Readings of the same figure that mean the same thing.
+
+    Tried only after an exact comparison fails, so a genuine disagreement is
+    still a disagreement — "38%" against 36.03% fails every variant.
+
+    * SCALE. A share is written "36%" and the judge reports it as either 36.0
+      or 0.36, while the tool reports 0.3603. Only one direction was tried, so
+      whichever way round the two landed decided whether a correct figure was
+      called wrong.
+    * SIGN. "declined by 2.2%" is a magnitude; the tool reports -0.022. Their
+      difference is notation, not arithmetic — but only when the answer did not
+      write a sign itself.
+    """
+    text = str(written or "")
+    variants = []
+    if "%" in text:
+        variants.append((expected * 100.0, computed, tolerance * 100.0))
+        variants.append((expected / 100.0, computed, tolerance / 100.0))
+    # Magnitudes are comparable unless the answer stated a direction that the
+    # evidence contradicts. "declined by 2.2%" against -0.022 is notation; "+5%"
+    # against -0.05 is the answer getting the direction wrong, which is exactly
+    # what this check exists to catch.
+    stated = _stated_direction(text)
+    if stated is None or computed == 0 or stated == (1 if computed > 0 else -1):
+        variants.extend([
+            (abs(want), abs(got), tol) for want, got, tol in
+            [(expected, computed, tolerance), *variants]
+        ])
+    return variants
+
+
+#: A written value that names a PERIOD rather than a quantity. The judge emits
+#: these among the numbers — `written_value: "mid-2024"`, `measures: "period of
+#: spike for TSR"` — and the numeric parser turns them into nonsense (-2024.0
+#: from "mid-2024", 2025.0 from "2025-02 to 2025-05"), which then fails to
+#: locate and is charged to the answer as an unsupported figure.
+#:
+#: A period is a real part of a claim and worth checking; it is simply not a
+#: number, and the numeric trace is the wrong instrument for it.
+_MONTHS = (
+    "january|february|march|april|may|june|july|august|september|october"
+    "|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+_PERIOD_FORMS = re.compile(
+    r"^\s*(?:"
+    r"(?:mid|early|late|end of|start of|beginning of)[\s-]+\d{4}"      # mid-2024
+    r"|q[1-4]\s*'?\d{2,4}"                                             # Q2 2024
+    r"|\d{4}-\d{2}(?:-\d{2})?(?:\s*(?:to|-|–|through|until)\s*"
+    r"\d{4}-\d{2}(?:-\d{2})?)?"                                       # 2025-02 to 2025-05
+    r"|(?:" + _MONTHS + r")[\s-]*\d{4}"                                # May 2025
+    r"|\d{4}\s*(?:to|-|–|through)\s*\d{4}"                           # 2024-2025
+    r")\s*$",
+    re.I,
+)
+
+
+def is_period_expression(written: Any, measures: Any = None) -> bool:
+    """Does this mention name a period rather than a quantity?
+
+    Two independent signals, either is enough: the written form parses as a
+    date or span, or the judge's own `measures` says it is a period. The second
+    catches phrasings the pattern misses, and costs nothing — a mention
+    described as a period was never a figure to trace.
+    """
+    if _PERIOD_FORMS.match(str(written or "")):
+        return True
+    described = str(measures or "").strip().lower()
+    return described.startswith(("period ", "period of", "month ", "months ",
+                                 "timeframe", "time period", "date range"))

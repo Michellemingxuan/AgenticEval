@@ -10,7 +10,8 @@ from typing import Any
 
 import yaml
 
-from agentic_eval.modules import resolve_modules
+from agentic_eval.cases import describe_case, discover_case_ids
+from agentic_eval.scoring import resolve_modules
 from agentic_eval.models import Question
 
 
@@ -68,7 +69,13 @@ def _questions(data: dict[str, Any], base: Path) -> list[Question]:
         for source in sources if isinstance(sources, list) else [sources]:
             path = Path(_resolve_path(base, source) or "")
             loaded = _load_mapping(path)
-            rows.extend(loaded.get("questions") or loaded.get("test_cases") or [])
+            # The file is the set unless it names one. Each set becomes its own
+            # stateful session, so this is what keeps series D's cold ask cold.
+            set_name = str(loaded.get("question_set") or path.stem)
+            for row in loaded.get("questions") or loaded.get("test_cases") or []:
+                if isinstance(row, dict):
+                    row = {"question_set": set_name, **row}
+                rows.append(row)
     else:
         q_data = data
         rows = q_data.get("questions") or q_data.get("test_cases")
@@ -91,7 +98,12 @@ def _questions(data: dict[str, Any], base: Path) -> list[Question]:
         )
         if row.get("relation") is not None:
             evaluation.setdefault("relation", row["relation"])
-        out.append(Question(name, text, evaluation))
+        out.append(Question(
+            name, text, evaluation,
+            # Inline questions are one unnamed set: a single config-level list
+            # is one conversation, which is what it was before sets existed.
+            question_set=str(row.get("question_set") or "questions"),
+        ))
     return out
 
 
@@ -154,8 +166,63 @@ def _merge_content_rubric(
         evaluation = _normalize_memory_evaluation(
             evaluation, row, question_name=question.name,
         )
-        merged.append(Question(question.name, question.text, evaluation))
+        merged.append(Question(
+            question.name, question.text, evaluation,
+            question_set=question.question_set,
+        ))
     return merged
+
+
+def _cases(
+    experiment: dict[str, Any], systems: dict[str, dict[str, Any]], base: Path,
+) -> list[str | None]:
+    """The cases this run covers, in the order they will be asked.
+
+    Three sources, most explicit first: `experiment.cases` (a literal list),
+    `experiment.cases_from` (a data directory to discover), and the per-system
+    `config.case_id` that single-case configs already carry. The last keeps
+    every existing config working unchanged — it resolves to a one-case run.
+
+    Returns `[None]` when nothing names a case, so the runner always loops over
+    at least one case and an adapter that does not take a case id still runs.
+    """
+    listed = experiment.get("cases")
+    discovered = experiment.get("cases_from")
+    if listed is not None and discovered is not None:
+        raise ValueError(
+            "experiment.cases and experiment.cases_from are alternatives; "
+            "give one, not both"
+        )
+    if listed is not None:
+        if not isinstance(listed, list) or not listed:
+            raise ValueError("experiment.cases must be a non-empty list")
+        cases = [str(case) for case in listed]
+    elif discovered is not None:
+        cases = discover_case_ids(_resolve_path(base, str(discovered)) or "")
+    else:
+        # Per-system case ids must agree: two systems asked about different
+        # customers are not a comparison, and nothing downstream would say so.
+        configured = {
+            str(case_id)
+            for target in systems.values()
+            if (case_id := (target.get("config") or {}).get("case_id"))
+        }
+        if len(configured) > 1:
+            raise ValueError(
+                "systems disagree on case_id "
+                f"({', '.join(sorted(describe_case(c) for c in configured))}); "
+                "use experiment.cases to run several cases against both"
+            )
+        if not configured:
+            return [None]
+        cases = sorted(configured)
+    duplicates = sorted({case for case in cases if cases.count(case) > 1})
+    if duplicates:
+        raise ValueError(
+            f"experiment.cases repeats {', '.join(map(describe_case, duplicates))}; "
+            "a case asked twice inflates every rate it contributes to"
+        )
+    return list(cases)
 
 
 def _system_config(name: str, raw: dict[str, Any], base: Path) -> dict[str, Any]:
@@ -207,6 +274,20 @@ def load_config(path: str | Path) -> EvalConfig:
         raise ValueError("experiment.repeats must be >= 1")
     experiment["mode"] = mode
     experiment["repeats"] = repeats
+    # Each worker starts its own server instance per system, because the system
+    # under test keeps its data gateway process-global and re-scopes it per
+    # turn — two sessions on one process can execute against each other's case.
+    # So this is bounded low: it costs real processes, not just threads.
+    workers = int(experiment.get("workers", 1) or 1)
+    if workers < 1:
+        raise ValueError("experiment.workers must be >= 1")
+    if workers > 8:
+        raise ValueError(
+            f"experiment.workers is {workers}: each one runs a full server per "
+            "system, so this would start "
+            f"{workers * len(data.get('systems') or {})} processes. Keep it <= 8"
+        )
+    experiment["workers"] = workers
     experiment["timeout_s"] = float(experiment.get("timeout_s", 600))
     experiment["seed"] = int(experiment.get("seed", 20260731))
     if experiment.get("eval_modules") is not None:
@@ -228,6 +309,8 @@ def load_config(path: str | Path) -> EvalConfig:
         raise ValueError("baseline and candidate must name two different systems")
     experiment["baseline"] = baseline
     experiment["candidate"] = candidate
+    experiment["cases"] = _cases(experiment, systems, base)
+    experiment.pop("cases_from", None)
     content = _content_config(data, base)
     # The same physical k runs feed latency, consistency, and content scoring.
     # Keeping this in the resolved content config lets post-processing detect a

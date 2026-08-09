@@ -1,13 +1,9 @@
 import json
+import re
 
 from agentic_eval.layout import RunLayout
-from agentic_eval.content import (
-    answer_comparison_html,
-    find_run_manifest,
-    resolve_view_defaults,
-    select_repeat,
-    write_answer_comparison,
-)
+from agentic_eval.render import write_answer_comparison, select_repeat, answer_comparison_html
+from agentic_eval.render import find_run_manifest, resolve_view_defaults
 
 
 def _evaluation(system, name, run_index, answer, *, metrics=None, fact=None):
@@ -210,7 +206,7 @@ def test_metrics_tab_has_all_four_eval_modules():
     page = answer_comparison_html(
         rows, baseline="old", candidate="new", summary=summary,
     )
-    for heading in ("Content", "Consistency", "Latency", "Memory"):
+    for heading in ("Content", "Consistency", "System", "Memory"):
         assert f"<h4>{heading}</h4>" in page
     assert "20.0s" in page and "30.0s" in page      # dotted key resolved
     assert "Memory hit rate" in page
@@ -241,7 +237,9 @@ def test_missing_summary_explains_itself_instead_of_showing_blanks():
     rows = [_evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B")]
     page = answer_comparison_html(rows, baseline="old", candidate="new")
     assert "summary.json" in page
-    assert "<h4>Latency</h4>" in page
+    # Titled System, not Latency: the block carries tool-call success
+    # beside the costs. `latency` remains the module's registry name.
+    assert "<h4>System</h4>" in page
 
 
 def test_questions_appear_in_the_navigation_panel():
@@ -278,7 +276,7 @@ def test_run_summary_is_not_confused_with_the_content_summary(tmp_path):
     consistency/latency/memory tables from a file containing none of them —
     silently, as empty rows.
     """
-    from agentic_eval.content import find_run_summary
+    from agentic_eval.render import find_run_summary
 
     run = tmp_path / "exp_1"
     (run / "content").mkdir(parents=True)
@@ -298,7 +296,7 @@ def test_run_summary_is_not_confused_with_the_content_summary(tmp_path):
 
 def test_pre_migration_runs_still_resolve_their_summary(tmp_path):
     """Older runs keep summary.json at the root; it must still be read."""
-    from agentic_eval.content import find_run_summary
+    from agentic_eval.render import find_run_summary
 
     run = tmp_path / "old_run"
     (run / "content").mkdir(parents=True)
@@ -327,7 +325,9 @@ def test_summary_section_totals_the_question_set():
     ]
     page = answer_comparison_html(rows, baseline="old", candidate="new")
     summary = page.split('class="summary"', 1)[1].split("</section>", 1)[0]
-    assert "Question set — overall" in page
+    # "All question sets", not "Question set": a set is now a named dimension
+    # with its own sections below, so the overall block must not claim the name.
+    assert "All question sets — overall" in page
     assert "2 questions" in summary
     # old: 1/2 = 50%   new: 2/3 = 67%
     assert "50% (1/2)" in summary and "67% (2/3)" in summary
@@ -465,7 +465,7 @@ def test_judge_error_is_not_shown_as_a_metric_but_claims_stay_marked():
     assert "Orthogonal claims" in page
 
 
-def test_modules_are_ordered_with_memory_before_latency():
+def test_modules_are_ordered_with_memory_before_system():
     rows = [_evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B")]
     summary = {"groups": [
         _summary_group("old", "q1", memory_hit_rate=1.0,
@@ -475,29 +475,33 @@ def test_modules_are_ordered_with_memory_before_latency():
     ]}
     page = answer_comparison_html(rows, baseline="old", candidate="new",
                                   summary=summary)
-    assert page.index("<h4>Memory</h4>") < page.index("<h4>Latency</h4>")
+    assert page.index("<h4>Memory</h4>") < page.index("<h4>System</h4>")
     # Per-question metrics use the same 2x2 board as the overview.
     assert page.count('class="mgrid"') >= 2
 
 
 def test_a_count_is_totalled_over_the_question_set_not_averaged():
-    """1 memory-required run across 6 questions is 1, not 0.17."""
+    """1 memory-required question out of 2 is 1, not 0.5.
+
+    The count is over QUESTIONS, so it does not move when k or the case list
+    changes — it is a fact about the suite, not about how often it was asked.
+    """
     rows = [
         _evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B"),
         _evaluation("old", "q2", 1, "C"), _evaluation("new", "q2", 1, "D"),
     ]
     summary = {"groups": [
-        _summary_group("old", "q1", memory_required_run_count=1),
-        _summary_group("old", "q2", memory_required_run_count=0),
-        _summary_group("new", "q1", memory_required_run_count=1),
-        _summary_group("new", "q2", memory_required_run_count=0),
+        _summary_group("old", "q1", memory_required_question_count=1),
+        _summary_group("old", "q2", memory_required_question_count=0),
+        _summary_group("new", "q1", memory_required_question_count=1),
+        _summary_group("new", "q2", memory_required_question_count=0),
     ]}
     page = answer_comparison_html(
         rows, baseline="old", candidate="new", summary=summary,
     )
     overview = page.split('id="overview"', 1)[1].split("</section>", 1)[0]
     memory = overview.split("<h4>Memory</h4>", 1)[1]
-    assert "Memory-required runs" in memory
+    assert "Memory-required questions" in memory
     assert ">1<" in memory and "0.5" not in memory
 
 
@@ -669,3 +673,401 @@ def test_metrics_total_over_repeats_not_the_shown_one():
     page = answer_comparison_html(rows, baseline="old", candidate="new")
     assert "2/3" in page
     assert "totalled over all 3" in page
+
+
+def test_metrics_open_first_and_claims_are_deduplicated_by_default():
+    """The metrics are the result; the answers are the evidence for it.
+
+    And a restatement is one fact stated twice — the metrics already count it
+    once, so showing it by default made the page and the numbers disagree.
+    """
+    rows = [_evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B")]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert '<button role="tab" data-tab="metrics" aria-selected="true">' in page
+    assert 'data-tab="claims" aria-selected="false"' in page
+    assert '<div class="tabpanel" data-tab="claims" hidden>' in page
+    assert 'id="hide-restated" checked' in page
+    assert '<body class="hide-restated">' in page
+
+
+def test_the_page_does_not_say_atomic_facts():
+    """"Atomic fact" reads as the system's own KPs; these are extracted claims."""
+    rows = [_evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B")]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert "atomic fact" not in page.lower()
+    assert "claim" in page.lower()
+
+
+def _with_case(evaluation, case_id):
+    return {**evaluation, "case_id": case_id}
+
+
+def test_case_tabs_appear_and_every_case_repeat_pane_is_rendered():
+    """Case and repeat are coordinates on one grid, not independent filters.
+
+    A pane carries both, and the page opens on the first case's sampled
+    repeat — so two readings of "the same" report show the same answers.
+    """
+    rows = [
+        _with_case(_evaluation("old", "q1", 1, "OLD A1"), "case_a"),
+        _with_case(_evaluation("new", "q1", 1, "NEW A1"), "case_a"),
+        _with_case(_evaluation("old", "q1", 2, "OLD A2"), "case_a"),
+        _with_case(_evaluation("new", "q1", 2, "NEW A2"), "case_a"),
+        _with_case(_evaluation("old", "q1", 1, "OLD B1"), "case_b"),
+        _with_case(_evaluation("new", "q1", 1, "NEW B1"), "case_b"),
+        _with_case(_evaluation("old", "q1", 2, "OLD B2"), "case_b"),
+        _with_case(_evaluation("new", "q1", 2, "NEW B2"), "case_b"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert 'class="ctab"' in page
+    assert 'data-case="case_a"' in page and 'data-case="case_b"' in page
+    # Every case x repeat answer is on the page, not just the sampled one.
+    for answer in ("OLD A1", "OLD A2", "OLD B1", "OLD B2", "NEW B2"):
+        assert answer in page
+    # Exactly one pane open: first case, first repeat.
+    assert '<div class="rpane" data-repeat="1" data-case="case_a">' in page
+    assert '<div class="rpane" data-repeat="2" data-case="case_a" hidden>' in page
+    assert '<div class="rpane" data-repeat="1" data-case="case_b" hidden>' in page
+    assert page.count("2 cases") >= 1
+
+
+def test_a_single_case_run_shows_no_case_selector():
+    """One case is not a choice, and a selector with one option is noise."""
+    rows = [
+        _with_case(_evaluation("old", "q1", 1, "OLD ONE"), "case_a"),
+        _with_case(_evaluation("new", "q1", 1, "NEW ONE"), "case_a"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert 'class="ctab"' not in page
+    assert "OLD ONE" in page and "NEW ONE" in page
+
+
+def test_a_run_predating_case_id_still_renders():
+    """Older evaluations carry no case; the page must not require one."""
+    rows = [
+        _evaluation("old", "q1", 1, "OLD ONE"),
+        _evaluation("new", "q1", 1, "NEW ONE"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert 'class="ctab"' not in page
+    assert "data-case=" not in page
+    assert "OLD ONE" in page and "NEW ONE" in page
+
+
+def test_a_padded_case_reads_plainly_but_selects_exactly():
+    """The tab LABEL is tidied; the value that selects panes is not.
+
+    Quoting the label put `'11854808010 '` on a button, which reads as part of
+    the id. The exact id stays in `data-case` — panes are matched on it — and
+    hovering says what it really is.
+    """
+    rows = [
+        _with_case(_evaluation("old", "q1", 1, "OLD PAD"), "11854808010 "),
+        _with_case(_evaluation("new", "q1", 1, "NEW PAD"), "11854808010 "),
+        _with_case(_evaluation("old", "q1", 1, "OLD PLAIN"), "366132845011"),
+        _with_case(_evaluation("new", "q1", 1, "NEW PLAIN"), "366132845011"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert '>11854808010</button>' in page          # label, tidied
+    assert 'data-case="11854808010 "' in page       # value, exact
+    assert "exact id:" in page                      # hover says so
+
+
+def _in_set(evaluation, question_set):
+    return {**evaluation, "question_set": question_set}
+
+
+def test_each_question_set_gets_its_own_metrics_section():
+    """Series A and series B answer different questions about the system.
+
+    Pooling them into one overall number answers neither, and reading every
+    question separately buries it. The set total is built from the same
+    `_content_rows` as the overview, so the two cannot disagree.
+    """
+    rows = [
+        _in_set(_evaluation("old", "a1", 1, "A", metrics={
+            "factual_grounded_count": 1, "orthogonal_claim_count": 1}), "series_a"),
+        _in_set(_evaluation("new", "a1", 1, "B", metrics={
+            "factual_grounded_count": 1, "orthogonal_claim_count": 1}), "series_a"),
+        _in_set(_evaluation("old", "b1", 1, "C", metrics={
+            "factual_grounded_count": 0, "orthogonal_claim_count": 2}), "series_b"),
+        _in_set(_evaluation("new", "b1", 1, "D", metrics={
+            "factual_grounded_count": 2, "orthogonal_claim_count": 2}), "series_b"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert 'id="set-series_a"' in page and 'id="set-series_b"' in page
+    a_block = page.split('id="set-series_a"', 1)[1].split("</section>", 1)[0]
+    b_block = page.split('id="set-series_b"', 1)[1].split("</section>", 1)[0]
+    # series_a: both 1/1. series_b: old 0/2, new 2/2.
+    assert "100% (1/1)" in a_block
+    assert "0% (0/2)" in b_block and "100% (2/2)" in b_block
+    assert "own session" in a_block
+
+
+def test_one_set_gets_no_per_set_section():
+    """With a single set the per-set table is the overview under another name."""
+    rows = [
+        _in_set(_evaluation("old", "a1", 1, "A"), "series_a"),
+        _in_set(_evaluation("new", "a1", 1, "B"), "series_a"),
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert 'id="set-series_a"' not in page
+    assert "All question sets — overall" in page
+
+
+def _two_case_rows():
+    rows = []
+    for case in ("case_a", "case_b"):
+        for repeat in (1, 2):
+            for system in ("old", "new"):
+                for name, qset in (("a1", "series_a"), ("b1", "series_b")):
+                    rows.append({
+                        **_evaluation(system, name, repeat, f"{system} {name}"),
+                        "case_id": case, "question_set": qset,
+                    })
+    return rows
+
+
+def test_the_case_and_repeat_selectors_belong_to_the_answers_tab():
+    """They say "answers only" — on the metrics tab they control nothing.
+
+    Every metric is totalled over all cases and repeats, so a selector sitting
+    above them invites the reading that it filters them.
+    """
+    page = answer_comparison_html(_two_case_rows(), baseline="old", candidate="new")
+    for label in ('aria-label="case"', 'aria-label="repeat"'):
+        bar = page.split(label, 1)[0].rsplit("<div", 1)[1] + label
+        tag = page[page.index("<div" + bar) : page.index(">", page.index(label))]
+        assert 'data-only-tab="claims"' in tag, label
+        assert "hidden" in tag, f"{label} must start hidden — metrics opens first"
+    # `hidden` loses to `display:flex` without an explicit rule.
+    assert ".repeats[hidden] { display: none; }" in page
+
+
+def test_the_nav_follows_the_tab():
+    """Metrics lists what the metrics group by; Answers lists the questions."""
+    page = answer_comparison_html(_two_case_rows(), baseline="old", candidate="new")
+    metrics_nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
+    claims_nav = page.split('<div data-only-tab="claims" hidden>', 1)[1].split("</div>", 1)[0]
+    assert "<h2>Metrics</h2>" in metrics_nav
+    assert "<h2>Questions</h2>" in claims_nav
+    names = lambda block: re.findall(r'class="tname">([^<]+)<', block)
+    # Sets, each followed by its own questions nested beneath it.
+    assert names(metrics_nav) == ["overview", "series_a", "a1", "series_b", "b1"]
+    assert sorted(names(claims_nav)) == ["a1", "b1"]
+    # The question list must not offer links while the metrics tab is open.
+    assert '<div data-only-tab="claims" hidden><h2>Questions' in page
+
+
+def test_the_open_tab_and_the_page_agree_on_load():
+    """Every `data-only-tab="metrics"` section ships hidden.
+
+    With metrics as the default tab and no call on load, the page opened with
+    the tab selected but its overview and per-set tables invisible until the
+    tab was clicked once.
+    """
+    page = answer_comparison_html(_two_case_rows(), baseline="old", candidate="new")
+    assert 'showTab(document.querySelector' in page
+
+
+def test_the_metrics_nav_nests_each_sets_questions_under_it():
+    """Per-question metrics live on this tab; the nav must reach them.
+
+    Listing only the set totals left the rows they are made of scrollable but
+    unreachable — the reader could see 30/40 for series_b and had no way to ask
+    which of its questions lost the ten.
+    """
+    page = answer_comparison_html(_two_case_rows(), baseline="old", candidate="new")
+    metrics_nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
+    assert '<ul class="subtoc">' in metrics_nav
+    # Each question links to its own metrics section and keeps the tab.
+    for name, anchor in (("a1", "q0"), ("b1", "q1")):
+        assert (
+            f'<li><a href="#{anchor}" data-target="{anchor}" data-tab="metrics">'
+            f'<span class="tname">{name}</span></a></li>'
+        ) in metrics_nav, name
+    # A question sits under ITS set, not the other one.
+    a_block = metrics_nav.split("series_a", 1)[1].split("series_b", 1)[0]
+    assert "a1" in a_block and "b1" not in a_block
+
+
+def test_the_answers_nav_stays_flat():
+    """It lists questions only — nesting them under sets would repeat the
+    metrics nav while the sets have no answers panel to open."""
+    page = answer_comparison_html(_two_case_rows(), baseline="old", candidate="new")
+    claims_nav = page.split('<div data-only-tab="claims" hidden>', 1)[1].split("</div>", 1)[0]
+    assert '<ul class="subtoc">' not in claims_nav
+
+
+def _ordered_rows():
+    """Two sets whose positions both restart at 1, listed b-then-a."""
+    spec = [
+        ("series_b", "b2", 1), ("series_b", "b3", 2),
+        ("series_a", "a1", 1), ("series_a", "a2", 2),
+    ]
+    return [
+        {
+            **_evaluation(system, name, 1, f"{system} {name}"),
+            "question_set": qset, "sequence_position": position,
+            "mode": "stateful",
+        }
+        for qset, name, position in spec
+        for system in ("old", "new")
+    ]
+
+
+def test_questions_order_by_set_then_position_within_it():
+    """`sequence_position` restarts at 1 in every set — each is its own
+    conversation — so ordering by it alone grouped every set's OPENING question
+    together and pushed the follow-ups to the end.
+    """
+    page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
+    ordered = re.findall(
+        r'<section class="question" id="q\d+"[^>]*>\s*<h3>([^<]+)</h3>', page,
+    )
+    assert ordered == ["b2", "b3", "a1", "a2"]
+
+
+def test_set_order_follows_the_records_not_the_alphabet():
+    """Records are written session by session, so first appearance is config
+    order. Alphabetical would disagree with the question sections above the
+    moment a set is named anything outside a sortable pattern."""
+    page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
+    assert page.index('id="set-series_b"') < page.index('id="set-series_a"')
+    nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
+    assert re.findall(r'class="tname">([^<]+)<', nav) == [
+        "overview", "series_b", "b2", "b3", "series_a", "a1", "a2",
+    ]
+
+
+def test_the_anchors_of_one_set_are_contiguous():
+    """b3 must follow b2, not land after another set's question."""
+    page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
+    nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
+    b_sub = nav.split("series_b", 1)[1].split("series_a", 1)[0]
+    assert re.findall(r'href="#(q\d+)"', b_sub) == ["q0", "q1"]
+
+
+def _ungrounded(**fields):
+    return {
+        "claim_id": "c1", "grounding_kind": "none",
+        "evidence_resolution": "resolved", **fields,
+    }
+
+
+def test_an_ungrounded_claim_says_why_in_red():
+    """The marker says a claim did not ground; it does not say why.
+
+    Without this a reader has to open the record for every ○, and the shape of
+    the failure — nine claims losing on the same wrong window — is invisible.
+    """
+    rows = [_evaluation("old", "q1", 1, "AN ANSWER", fact=_ungrounded(
+        eligible="no", traced="yes", route=[{"step": "x"}],
+        eligibility_reason="covers July 2023 to Feb 2025, but the question "
+                           "asks about 2025/2026",
+    ))]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    assert '<div class="why"' in page
+    assert "route answers a different question" in page
+    # The judge's full sentence stays on hover, not in the row.
+    assert "covers July 2023 to Feb 2025" in page
+    assert ".facts .why {" in page and "color: var(--bad)" in page
+
+
+def test_the_reason_names_the_figure_that_failed():
+    """"figures not found" does not say WHICH figure.
+
+    The written value is what a reader is looking for, and naming it often
+    exposes the real problem — "mid-2024" is a period label the numeric check
+    was never going to locate.
+    """
+    cases = [
+        (dict(eligible="no", route=[{"s": 1}]), "route answers a different question"),
+        (dict(eligible="yes", route=[{"s": 1}], numbers=[
+            {"written_value": "$0", "trace_failure": "not_located"}]),
+         "\u201c$0\u201d not found in the cited evidence"),
+        (dict(eligible="yes", route=[{"s": 1}], numbers=[
+            {"written_value": "42%", "trace_failure": "value_mismatch",
+             "evidence_value": 38}]),
+         "\u201c42%\u201d disagrees with the evidence (38)"),
+        (dict(eligible="yes", route=[{"s": 1}], relations=[
+            {"trace_failure": "relation_does_not_hold"}]),
+         "the stated relation is not confirmed by the evidence"),
+        (dict(eligible="yes", route=[]), "no recorded operation behind it"),
+        (dict(eligible="unavailable", route=[{"s": 1}]),
+         "no recorded operation to rule on"),
+    ]
+    for fields, expected in cases:
+        page = answer_comparison_html(
+            [_evaluation("old", "q1", 1, "A", fact=_ungrounded(**fields))],
+            baseline="old", candidate="new",
+        )
+        assert expected in page, fields
+
+
+def test_several_failing_figures_are_summarised_not_listed_in_full():
+    fact = _ungrounded(eligible="yes", route=[{"s": 1}], numbers=[
+        {"written_value": f"v{i}", "trace_failure": "not_located"} for i in range(4)
+    ])
+    page = answer_comparison_html(
+        [_evaluation("old", "q1", 1, "A", fact=fact)],
+        baseline="old", candidate="new",
+    )
+    assert "(+2 more)" in page
+
+
+def test_the_hover_detail_matches_the_label():
+    """It used to be `eligibility_reason` whatever failed, so a numeric-trace
+    failure hovered to a sentence explaining why the route WAS eligible."""
+    fact = _ungrounded(
+        eligible="yes",
+        eligibility_reason="the route is eligible and addresses the question",
+        route=[{"s": 1}],
+        numbers=[{"written_value": "$0", "trace_failure": "not_located",
+                  "json_path": "results[0].summary"}],
+    )
+    page = answer_comparison_html(
+        [_evaluation("old", "q1", 1, "A", fact=fact)],
+        baseline="old", candidate="new",
+    )
+    assert "the route is eligible" not in page
+    assert "results[0].summary" in page
+
+
+def test_a_grounded_claim_carries_no_reason():
+    """The red line is for failures only; on a grounded row it is noise."""
+    page = answer_comparison_html(
+        [_evaluation("old", "q1", 1, "A")], baseline="old", candidate="new",
+    )
+    assert '<div class="why"' not in page
+
+
+def test_memory_requirement_is_a_question_count_not_a_run_count():
+    """`Memory required: 4` was counting runs — 2 cases x 2 repeats.
+
+    Needing memory is a property of the QUESTION, so it must not move when k
+    or the case list changes. Over the set it is a count of questions; for a
+    single question it is a yes/no.
+    """
+    from agentic_eval.render.page import _MODULE_METRICS, _QUESTION_MODULE_METRICS
+
+    overview = {label: kind for key, label, _b, kind in _MODULE_METRICS["memory"]}
+    assert overview["Memory-required questions"] == "count"
+    assert "Memory-required runs" not in overview
+
+    per_question = {
+        label: (key, kind)
+        for key, label, _b, kind in _QUESTION_MODULE_METRICS["memory"]
+    }
+    assert per_question["Memory required"] == ("memory_required", "bool")
+
+
+def test_a_yes_no_row_renders_as_words_with_no_delta():
+    from agentic_eval.render.page import _delta_cell, _fmt_value
+
+    assert _fmt_value(True, "bool") == "yes"
+    assert _fmt_value(False, "bool") == "no"
+    # Not annotated is not the same as "no".
+    assert _fmt_value(None, "bool") == "—"
+    # Both systems answer the same question set, so a delta is meaningless.
+    assert _delta_cell(True, False, True, "bool") == '<td class="delta"></td>' 

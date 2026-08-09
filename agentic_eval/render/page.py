@@ -1,7 +1,7 @@
 """Side-by-side viewer for one sampled repeat: answers, facts, metrics.
 
 A scorecard says which system scored better; it cannot say why. This puts the
-two raw answers next to each other, then the atomic facts each was decomposed
+two raw answers next to each other, then the claims each was decomposed
 into with the cascade markers, then the metrics that follow from them — so a
 number can be walked back to the sentence that produced it.
 
@@ -16,9 +16,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from agentic_eval.cases import describe_case
 from agentic_eval.common.coerce import _slug
 from agentic_eval.layout import RunLayout
-from agentic_eval.content.report import _GROUNDING_MARKER
+from agentic_eval.render.markers import GROUNDING_MARKER as _GROUNDING_MARKER
 
 def _dig(source: dict[str, Any], key: str) -> Any:
     """Read a possibly dotted key, e.g. `latency_seconds.mean`."""
@@ -70,11 +71,12 @@ _CONTENT_METRICS = (
     ("factual_grounded_count", "orthogonal_claim_count", "· factual grounded", True, "part"),
     ("report_grounded_count", "orthogonal_claim_count", "· report grounded", True, "part"),
     ("must_have_coverage", "must_have_questions", "Must-have hit rate", True, "rate"),
-    # Arrival is in the memory module; this is USE. A source offered and not
-    # drawn on is not a failure — but a session that never leverages what it
-    # remembers is paying for the memory and re-doing the work anyway.
-    ("memory_sources_leveraged", "memory_sources_offered", "Memory leveraged", True, "rate"),
 )
+
+# Memory leverage was here and is gone. Its denominator counted memory SOURCES
+# offered rather than answers or runs, so "3/8" needed a paragraph to explain
+# and invited being read as three of eight answers. Arrival and hit rate under
+# Memory answer the question it was reaching for.
 
 #: The other three eval modules, read from the run's `summary.json`.
 _MODULE_METRICS = {
@@ -85,9 +87,13 @@ _MODULE_METRICS = {
     ),
     "memory": (
         ("memory_hit_rate", "Memory hit rate", True, "pct"),
-        ("memory_required_run_count", "Memory-required runs", True, "count"),
+        ("memory_required_question_count", "Memory-required questions", True, "count"),
     ),
     "latency": (
+        # Success first: a fast, cheap answer built on calls that returned
+        # nothing is not a better answer.
+        ("tool_call_success_rate", "Tool-call success", True, "pct"),
+        ("tool_calls_empty", "· calls that failed", False, "count"),
         ("latency_seconds.mean", "Latency mean", False, "sec"),
         ("total_tokens.mean", "Total tokens", False, "num"),
         ("llm_call_count.mean", "LLM calls", False, "num"),
@@ -101,13 +107,18 @@ _MODULE_METRICS = {
 _QUESTION_MODULE_METRICS = {
     **_MODULE_METRICS,
     "memory": (
-        ("memory_required_run_count", "Memory required", True, "count"),
-        ("memory_hit_rate", "Memory hit", True, "pct"),
+        # Whether THIS question needs memory is a yes/no; the count belongs to
+        # the set overview, where summing over questions means something.
+        ("memory_required", "Memory required", True, "bool"),
+        ("memory_hit_rate", "Memory hit rate", True, "pct"),
     ),
 }
 
 
 def _fmt_value(value: Any, kind: str) -> str:
+    if kind == "bool":
+        # None is "not annotated", which is not the same as "no".
+        return "—" if value is None else ("yes" if value else "no")
     if value is None:
         return "—"
     if kind == "pct":
@@ -125,7 +136,10 @@ def _fmt_value(value: Any, kind: str) -> str:
 def _delta_cell(
     baseline: Any, candidate: Any, higher_is_better: bool, kind: str = "pct",
 ) -> str:
-    if baseline is None or candidate is None:
+    # Both systems answer the same question set, so a yes/no ABOUT the question
+    # cannot differ between them; a delta column on it would only ever be empty
+    # or a sign that something upstream went wrong.
+    if kind == "bool" or baseline is None or candidate is None:
         return '<td class="delta"></td>'
     change = float(candidate) - float(baseline)
     if abs(change) < 1e-9:
@@ -142,9 +156,10 @@ def _delta_cell(
 def _module_table(
     base_group: dict[str, Any] | None, cand_group: dict[str, Any] | None,
     *, spec, baseline: str, candidate: str, note: str,
+    extra_rows: list[str] | None = None,
 ) -> str:
     base_group, cand_group = base_group or {}, cand_group or {}
-    rows = []
+    rows = list(extra_rows or [])
     for key, label, higher_is_better, kind in spec:
         base_value, cand_value = _dig(base_group, key), _dig(cand_group, key)
         if base_value is None and cand_value is None:
@@ -216,6 +231,80 @@ def _team_block(evaluation: dict[str, Any] | None) -> str:
         + (f"<dl class=\"subq\">{rows}</dl>" if rows else "")
         + "</details>"
     )
+
+
+#: What each per-figure trace failure means, in the answer's own terms. The
+#: figure as WRITTEN is what a reader is looking for — "which number failed?" —
+#: and the code alone ("not_located") does not say.
+_FIGURE_FAILURES = {
+    "not_located": "not found in the cited evidence",
+    "value_mismatch": "disagrees with the evidence",
+    "ambiguous_scalar": "matches more than one value",
+    "imprecise_path": "points at the wrong part of the evidence",
+    "unmapped_but_present": "appears in the evidence, but not at the place the claim points to",
+    "secondary_source": "cited a summary rather than the measurement",
+}
+
+
+def _figure_note(number: dict[str, Any]) -> str:
+    """`"$0" not found in the cited evidence`, naming the figure."""
+    written = str(number.get("written_value") or "").strip()
+    failure = str(number.get("trace_failure") or "")
+    phrase = _FIGURE_FAILURES.get(failure, failure.replace("_", " "))
+    if failure == "value_mismatch" and number.get("evidence_value") is not None:
+        phrase = f"disagrees with the evidence ({number['evidence_value']})"
+    return f"“{written}” {phrase}" if written else phrase
+
+
+def _ungrounded_reason(fact: dict[str, Any]) -> tuple[str, str]:
+    """(short red label, hover detail) for a claim that did not ground.
+
+    The detail must MATCH the label. It used to be `eligibility_reason`
+    whatever the failure was, so a claim that failed its numeric trace hovered
+    to a sentence explaining why its route WAS eligible — the tooltip
+    contradicting the red text beside it.
+    """
+    if fact.get("grounding_kind") != "none":
+        return "", ""
+    if fact.get("eligible") == "no":
+        return (
+            "route answers a different question",
+            str(fact.get("eligibility_reason") or ""),
+        )
+    failing = [
+        number for number in fact.get("numbers") or []
+        if number.get("trace_failure")
+    ]
+    if failing:
+        notes = [_figure_note(number) for number in failing]
+        shown = "; ".join(notes[:2])
+        if len(notes) > 2:
+            shown += f" (+{len(notes) - 2} more)"
+        detail = " · ".join(
+            filter(None, [
+                "; ".join(notes),
+                *(f"cited: {n.get('json_path')}" for n in failing[:2]
+                  if n.get("json_path")),
+            ])
+        )
+        return shown, detail
+    relations = [
+        relation for relation in fact.get("relations") or []
+        if relation.get("trace_failure")
+    ]
+    if relations:
+        return (
+            "the stated relation is not confirmed by the evidence",
+            str(fact.get("reason") or ""),
+        )
+    if not fact.get("route"):
+        return "no recorded operation behind it", str(fact.get("reason") or "")
+    if fact.get("eligible") == "unavailable":
+        return (
+            "no recorded operation to rule on",
+            str(fact.get("eligibility_reason") or fact.get("reason") or ""),
+        )
+    return "did not ground", str(fact.get("reason") or "")
 
 
 def _facts_table(evaluation: dict[str, Any] | None) -> str:
@@ -294,19 +383,28 @@ def _facts_table(evaluation: dict[str, Any] | None) -> str:
                 '<td class="m"',
                 f'<td class="m" title="{html.escape(" · ".join(detail))}"',
             )
+        # The judge's full sentence stays on hover; the category is what the
+        # eye needs while scanning.
+        why, detail_text = _ungrounded_reason(fact) if fact else ("", "")
+        why_cell = (
+            f'<div class="why"'
+            + (f' title="{html.escape(detail_text)}"' if detail_text else "")
+            + f">{html.escape(why)}</div>"
+            if why else ""
+        )
         rows.append(
             f'<tr class="{classes}">'
             f'<td class="flag">{flag}</td>'
             f"{gnd_cell}"
             f'<td class="cid">{html.escape(str(claim.get("claim_id")))} '
             f'<span class="loc">{where}</span></td>'
-            f"<td>{proposition}</td></tr>"
+            f"<td>{proposition}{why_cell}</td></tr>"
         )
     if not rows:
         return '<p class="missing">No factual claims were extracted.</p>'
     return (
         '<table class="facts"><thead><tr><th></th><th>gnd</th>'
-        "<th>claim</th><th>atomic fact</th></tr></thead>"
+        "<th>claim</th><th>claim</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -387,10 +485,11 @@ def _totals(evaluations: list[dict[str, Any]], key: str) -> float | None:
 
 def _content_rows(
     base_runs: list[dict[str, Any]], cand_runs: list[dict[str, Any]],
+    spec=_CONTENT_METRICS,
 ) -> list[str]:
     """One row per content metric, as summed numerator over denominator."""
     rows = []
-    for numerator_key, denominator_key, label, higher_is_better, style in _CONTENT_METRICS:
+    for numerator_key, denominator_key, label, higher_is_better, style in spec:
         cells, values = [], []
         for runs in (base_runs, cand_runs):
             numerator = _totals(runs, numerator_key)
@@ -524,14 +623,22 @@ def _summary_block(
     question_count: int,
     groups: dict[tuple[str, str, str], dict[str, Any]],
     chosen_mode: str | None, *, baseline: str, candidate: str,
+    case_count: int = 1, questions: set[str] | None = None,
+    anchor: str = "overview", heading: str = "All question sets — overall",
+    subheading: str = "",
 ) -> str:
-    """Set-level metrics over every question and every repeat.
+    """Set-level metrics over every question, case and repeat.
 
     Content sums numerators and denominators rather than averaging per-repeat
     percentages: an average of averages cannot be shown as "n/d", and it hides
     how much each figure rests on. Module metrics stay macro-averaged over
     questions, since they are already aggregated per question by `run`.
+
+    Cases pool in with repeats: a case is another sample of the same question,
+    and a system that wins on one case and loses on another has not won. The
+    notes name the scope so a reader knows a figure spans several customers.
     """
+    over_cases = f", {case_count} cases" if case_count > 1 else ""
     def combine(values: list[float], kind: str) -> float | None:
         # A count is a total over the set; a rate is a macro average, so every
         # question counts once and a verbose answer cannot outvote a terse one.
@@ -542,9 +649,12 @@ def _summary_block(
     def module_value(system: str, key: str, kind: str) -> float | None:
         return combine([
             float(value)
-            for (group_system, group_mode, _name), group in groups.items()
+            for (group_system, group_mode, name), group in groups.items()
             if group_system == system
             and (chosen_mode is None or group_mode == chosen_mode)
+            # `questions=None` means the whole set; a question scope narrows
+            # the same aggregation to one series without a second code path.
+            and (questions is None or name in questions)
             and (value := _dig(group, key)) is not None
         ], kind)
 
@@ -559,7 +669,7 @@ def _summary_block(
         measured = True
         blocks.append(
             '<div class="mblock"><h4>Content</h4>'
-            '<p class="tnote">totalled over questions and repeats</p>'
+            f'<p class="tnote">totalled over questions and repeats{over_cases}</p>'
             '<table class="metrics"><thead><tr><th>Metric</th>'
             f"<th>{html.escape(baseline)}</th><th>{html.escape(candidate)}</th>"
             "<th>Δ</th></tr></thead>"
@@ -567,11 +677,13 @@ def _summary_block(
         )
     for title, spec, reader, note in (
         ("Consistency", _MODULE_METRICS["consistency"], module_value,
-         "macro average over questions, all repeats"),
+         f"macro average over questions, all repeats{over_cases}; "
+         "tool-call rows count every call, working or not — "
+         "see tool-call success under System"),
         ("Memory", _MODULE_METRICS["memory"], module_value,
-         "macro average over questions, all repeats"),
-        ("Latency", _MODULE_METRICS["latency"], module_value,
-         "macro average over questions, all repeats"),
+         f"macro average over questions, all repeats{over_cases}"),
+        ("System", _MODULE_METRICS["latency"], module_value,
+         f"macro average over questions, all repeats{over_cases}"),
     ):
         rows = []
         for key, label, higher_is_better, kind in spec:
@@ -611,14 +723,90 @@ def _summary_block(
         )
     if not blocks or not measured:
         return ""
+    scope = " · ".join(filter(None, [
+        f"{question_count} questions",
+        f"{case_count} cases" if case_count > 1 else "",
+        subheading,
+    ]))
     return (
-        '<section class="summary" id="overview" data-only-tab="metrics" hidden>'
-        "<h3>Question set — overall</h3>"
-        f'<p class="qtext">{question_count} questions</p>'
+        f'<section class="summary" id="{html.escape(anchor)}" '
+        'data-only-tab="metrics" hidden>'
+        f"<h3>{html.escape(heading)}</h3>"
+        f'<p class="qtext">{scope}</p>'
         f'<div class="tabpanel" data-tab="metrics">'
         f'<div class="mgrid">{"".join(blocks)}</div></div>'
         "</section>"
     )
+
+
+def _set_blocks(
+    runs: dict[str, dict[str, list[dict[str, Any]]]],
+    set_of: dict[str, str], groups: dict, chosen_mode: str | None, *,
+    baseline: str, candidate: str, case_count: int,
+    ordered_questions: list[str] | None = None,
+    anchors: dict[str, str] | None = None,
+    set_rank: dict[str, int] | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """A full metrics section per question SET, keyed by set name.
+
+    A set is the unit a reader compares: series A asks whether computable facts
+    come out right, series B whether a line of reasoning holds across turns.
+    Pooling them into one overall number answers neither, and reading eighteen
+    per-question tables buries the answer.
+
+    Every block the overview has — Content, Consistency, Memory, System —
+    restricted to the set's questions, so the same reading is available at set
+    level as at whole-run level. Built by the SAME function as the overview, so
+    a set total cannot disagree with the run total it contributes to.
+    """
+    by_set: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    questions_in_set: dict[str, set[str]] = defaultdict(set)
+    for name, per_system in runs.items():
+        set_name = set_of.get(name) or "questions"
+        questions_in_set[set_name].add(name)
+        for system, rows in per_system.items():
+            by_set[set_name][system].extend(rows)
+    # Nothing to separate: one set is the overview under another heading.
+    if len(by_set) < 2:
+        return {}, []
+    sections, toc = {}, []
+    ordered = sorted(
+        by_set.items(),
+        key=lambda item: ((set_rank or {}).get(item[0], len(set_rank or {})), item[0]),
+    )
+    for set_name, per_system in ordered:
+        names = questions_in_set[set_name]
+        block = _summary_block(
+            per_system, len(names), groups, chosen_mode,
+            baseline=baseline, candidate=candidate, case_count=case_count,
+            questions=names, anchor=f"set-{_slug(set_name)}", heading=set_name,
+            subheading="own session, so no other set's turns are in scope",
+        )
+        if not block:
+            continue
+        sections[set_name] = block
+        mine = [
+            question for question in (ordered_questions or [])
+            if (set_of.get(question) or "questions") == set_name
+            and question in (anchors or {})
+        ]
+        subtoc = "".join(
+            f'<li><a href="#{anchors[question]}" data-target="{anchors[question]}" '
+            f'data-tab="metrics"><span class="tname">{html.escape(question)}</span>'
+            "</a></li>"
+            for question in mine
+        )
+        anchor = f"set-{_slug(set_name)}"
+        toc.append(
+            f'<li><a href="#{anchor}" data-target="{anchor}" data-tab="metrics">'
+            f'<span class="tlabel"><span class="tname">{html.escape(set_name)}</span>'
+            f'<span class="tq">{len(names)} questions</span></span></a>'
+            + (f'<ul class="subtoc">{subtoc}</ul>' if subtoc else "")
+            + "</li>"
+        )
+    return sections, toc
 
 
 def _metrics_block(
@@ -643,8 +831,11 @@ def _metrics_block(
             note=over,
         )),
     ]
+    # `latency` is the module's registry name; the block is titled System
+    # because it now carries tool-call success beside the costs.
+    titles = {"consistency": "Consistency", "memory": "Memory", "latency": "System"}
     for module in ("consistency", "memory", "latency"):
-        parts.append((module.capitalize(), _module_table(
+        parts.append((titles[module], _module_table(
             base_group, cand_group, spec=_QUESTION_MODULE_METRICS[module],
             baseline=baseline, candidate=candidate, note=over,
         )))
@@ -688,12 +879,14 @@ def answer_comparison_html(
     chosen_mode, chosen_index = select_repeat(
         evaluations, mode=mode, run_index=run_index,
     )
-    # {question: {run_index: {system: evaluation}}} — every repeat is rendered
-    # and switched in the browser. Sampling one made two readings of "the same"
-    # report incomparable whenever the sample changed, and hid the thing k
-    # repeats exist to show: whether a verdict is stable or a coin flip.
-    by_repeat: dict[str, dict[int, dict[str, dict[str, Any]]]] = defaultdict(
-        lambda: defaultdict(dict)
+    # {question: {(case, run_index): {system: evaluation}}} — every case and
+    # repeat is rendered and switched in the browser. Sampling one made two
+    # readings of "the same" report incomparable whenever the sample changed,
+    # and hid the thing k repeats exist to show: whether a verdict is stable or
+    # a coin flip. Case is in the key because two cases share a run_index, and
+    # keying on the repeat alone would show one case's answer under the other.
+    by_repeat: dict[str, dict[tuple[str | None, int], dict[str, dict[str, Any]]]] = (
+        defaultdict(lambda: defaultdict(dict))
     )
     by_question: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     # Every repeat, for the metrics. Content rates are summed over runs, so a
@@ -701,14 +894,34 @@ def answer_comparison_html(
     runs: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
+    def case_of(row: dict[str, Any]) -> str | None:
+        case_id = row.get("case_id")
+        return str(case_id) if case_id is not None else None
+
+    case_ids = sorted(
+        {
+            case_of(row) for row in evaluations
+            if row.get("case_id") is not None
+            and (chosen_mode is None or row.get("mode") == chosen_mode)
+        },
+        key=str,
+    )
+    # A run that predates `case_id`, or a single-case run, has one nameless
+    # bucket — the case selector is then not rendered at all.
+    cases: list[str | None] = list(case_ids) or [None]
+    opened_case = cases[0]
     for row in evaluations:
         if chosen_mode is not None and row.get("mode") != chosen_mode:
             continue
         runs[str(row.get("name"))][str(row.get("system"))].append(row)
         if row.get("run_index") is not None:
-            by_repeat[str(row.get("name"))][int(row["run_index"])][
+            by_repeat[str(row.get("name"))][(case_of(row), int(row["run_index"]))][
                 str(row.get("system"))] = row
         if chosen_index is not None and row.get("run_index") != chosen_index:
+            continue
+        # The default panel shows the first case, so the page opens on one
+        # coherent case rather than whichever case was written last.
+        if case_of(row) != opened_case:
             continue
         by_question[str(row.get("name"))][str(row.get("system"))] = row
     repeat_indices = sorted({
@@ -720,14 +933,33 @@ def answer_comparison_html(
     # conversation: "what is the total balance of these cards?" only makes
     # sense after "how many commercial cards does the customer have?", and
     # sorting by name separates them and reverses the pair.
-    def asked_at(name: str) -> tuple[float, str]:
+    set_of = {
+        str(row.get("name")): str(row.get("question_set") or "questions")
+        for row in evaluations
+    }
+    # Set order is the order the sets first appear in the evaluations, which is
+    # the order the config lists them: records are written session by session,
+    # case then set then repeat. Alphabetical would put a `warmup` set after
+    # `series_d` and read as though it ran last.
+    set_rank: dict[str, int] = {}
+    for row in evaluations:
+        set_rank.setdefault(str(row.get("question_set") or "questions"), len(set_rank))
+
+    def asked_at(name: str) -> tuple[int, float, str]:
         positions = [
             float(row["sequence_position"])
             for rows in runs[name].values() for row in rows
             if row.get("sequence_position") is not None
         ]
-        # Name as tiebreak, so a run without positions still orders stably.
-        return (min(positions) if positions else float("inf"), name)
+        # Set FIRST, then position within it. `sequence_position` restarts at 1
+        # in every set — each is its own conversation — so ordering by it alone
+        # interleaved the sets and put every set's opening question together.
+        # Name as last tiebreak, so a run without positions still orders stably.
+        return (
+            set_rank.get(set_of.get(name) or "questions", len(set_rank)),
+            min(positions) if positions else float("inf"),
+            name,
+        )
 
     questions = sorted(by_question, key=asked_at)
 
@@ -739,8 +971,15 @@ def answer_comparison_html(
         for g in (summary or {}).get("groups") or []
     }
     sections = []
+    # Questions keyed by name so each can be placed under its own set's
+    # metrics rather than in one flat run at the end of the page.
+    section_by_question: dict[str, str] = {}
     toc = []
+    # name -> the id of its per-question section, so the metrics nav can nest
+    # each set's questions under it.
+    anchors: dict[str, str] = {}
     for index, name in enumerate(questions):
+        anchors[name] = f"q{index}"
         pair = by_question[name]
         base_eval, cand_eval = pair.get(baseline), pair.get(candidate)
         question_text = html.escape(str(
@@ -779,24 +1018,30 @@ def answer_comparison_html(
                 )
             )
 
-        # Every repeat, one hidden panel each. The metrics tab beside this is
-        # totalled over ALL of them regardless of which repeat is on screen —
-        # answers are read one at a time, rates are not.
+        # Every case × repeat, one hidden panel each. The metrics tab beside
+        # this is totalled over ALL of them regardless of which panel is on
+        # screen — answers are read one at a time, rates are not.
         repeats = repeat_indices or [chosen_index]
         opened = chosen_index if chosen_index in repeats else repeats[0]
+        # A run with no run_index has nothing in `by_repeat`; show the single
+        # pair rather than rendering "(no record)" for an answer we do have.
+        fallback = by_question[name] if not repeat_indices else {}
         repeat_panels = "".join(
             f'<div class="rpane" data-repeat="{idx}"'
-            f'{"" if idx == opened else " hidden"}>'
-            f'<div class="split">{panels_for(by_repeat[name].get(idx) or by_question[name])}</div>'
+            + (f' data-case="{html.escape(case)}"' if case is not None else "")
+            + f'{"" if idx == opened and case == opened_case else " hidden"}>'
+            f'<div class="split">'
+            f"{panels_for(by_repeat[name].get((case, idx)) or fallback)}</div>"
             "</div>"
+            for case in cases
             for idx in repeats
         )
-        sections.append(
+        section_by_question[name] = (
             f'<section class="question" id="q{index}" data-index="{index}">'
             f"<h3>{html.escape(name)}</h3>"
             f'<p class="qtext">{question_text}</p>'
-            f'<div class="tabpanel" data-tab="facts">{repeat_panels}</div>'
-            f'<div class="tabpanel" data-tab="metrics" hidden>'
+            f'<div class="tabpanel" data-tab="claims" hidden>{repeat_panels}</div>'
+            f'<div class="tabpanel" data-tab="metrics">'
             f"{_metrics_block(runs[name].get(baseline) or [], runs[name].get(candidate) or [], groups, name, chosen_mode, baseline=baseline, candidate=candidate)}"
             "</div></section>"
         )
@@ -831,6 +1076,7 @@ def answer_comparison_html(
         f"repeat <code>#{chosen_index}</code>" if chosen_index is not None else "",
         f"of {len(repeat_indices)}" if len(repeat_indices) > 1 else "",
         f"{len(questions)} questions",
+        f"{len(case_ids)} cases" if len(case_ids) > 1 else "",
     ]))
     runs_by_system: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for per_system in runs.values():
@@ -838,24 +1084,66 @@ def answer_comparison_html(
             runs_by_system[system].extend(rows)
     summary_block = _summary_block(
         runs_by_system, len(questions), groups, chosen_mode,
-        baseline=baseline, candidate=candidate,
+        baseline=baseline, candidate=candidate, case_count=len(cases),
     )
+    set_sections, set_toc = _set_blocks(
+        runs, set_of, groups, chosen_mode, baseline=baseline,
+        candidate=candidate, case_count=len(cases),
+        ordered_questions=questions, anchors=anchors, set_rank=set_rank,
+    )
+    # Each set's summary, then the questions it is made of — so a reader who
+    # sees series_b at 0.33 scrolls straight into b2 and b3 rather than hunting
+    # for them past three other series.
+    if set_sections:
+        body = "".join(
+            set_sections.get(set_name, "")
+            + "".join(
+                section_by_question.get(question, "")
+                for question in questions
+                if (set_of.get(question) or "questions") == set_name
+            )
+            for set_name in set_sections
+        )
+        # A question whose set produced no summary still belongs on the page.
+        placed = {
+            question for question in questions
+            if (set_of.get(question) or "questions") in set_sections
+        }
+        body += "".join(
+            section_by_question[question] for question in questions
+            if question not in placed
+        )
+    else:
+        body = "".join(section_by_question[q] for q in questions)
     # The overview lives on the metrics tab, so its nav link carries the tab to
     # switch to — a link that scrolls to something hidden is a dead link.
+    # The nav follows the tab: on Metrics it lists what the metrics are grouped
+    # by (the whole run, then each set); on Answers it lists the questions.
+    # One combined list offered links to whichever half was hidden.
     overview_nav = (
         '<ul class="toc toc-flat"><li>'
         '<a href="#overview" data-target="overview" data-tab="metrics">'
         '<span class="tlabel"><span class="tname">overview</span>'
-        '<span class="tq">all questions and repeats</span></span>'
-        "</a></li></ul>"
-        if summary_block else ""
+        '<span class="tq">all sets, questions and repeats</span></span>'
+        "</a></li>" + "".join(set_toc) + "</ul>"
+        if summary_block or set_toc else ""
+    )
+    metrics_nav = (
+        f'<div data-only-tab="metrics"><h2>Metrics</h2>{overview_nav}</div>'
+        if overview_nav else ""
+    )
+    questions_nav = (
+        '<div data-only-tab="claims" hidden><h2>Questions</h2>'
+        f'<ol class="toc">{"".join(toc)}</ol></div>'
+        if toc else ""
     )
     nav = (
-        overview_nav + f'<ol class="toc">{"".join(toc)}</ol>' if toc
-        else overview_nav or '<p class="missing">No questions.</p>'
+        metrics_nav + questions_nav
+        or '<p class="missing">No questions.</p>'
     )
     repeat_bar = (
-        '<div class="repeats" role="tablist" aria-label="repeat">'
+        '<div class="repeats" role="tablist" aria-label="repeat"'
+        ' data-only-tab="claims" hidden>'
         '<span class="rlabel">repeat</span>'
         + "".join(
             f'<button class="rtab" role="tab" data-repeat="{idx}" '
@@ -867,7 +1155,26 @@ def answer_comparison_html(
           f'{len(repeat_indices)} repeats</span></div>'
         if len(repeat_indices) > 1 else ""
     )
-    return _PAGE.replace("{{REPEATS}}", repeat_bar).replace(
+    # Only when there is a choice to make. One case needs no selector, and an
+    # older run without `case_id` has none to offer.
+    case_bar = (
+        '<div class="repeats cases" role="tablist" aria-label="case"'
+        ' data-only-tab="claims" hidden>'
+        '<span class="rlabel">case</span>'
+        + "".join(
+            f'<button class="ctab" role="tab" data-case="{html.escape(str(case))}" '
+            f'aria-selected="{"true" if case == opened_case else "false"}"'
+            + (f' title="exact id: {html.escape(describe_case(case))}"'
+               if str(case) != str(case).strip() else "")
+            + f">{html.escape(str(case).strip())}</button>"
+            for case in cases
+        )
+        + '<span class="rnote">answers only — metrics are totalled over all '
+          f'{len(cases)} cases</span></div>'
+        if len(cases) > 1 else ""
+    )
+    return _PAGE.replace("{{CASES}}", case_bar).replace(
+        "{{REPEATS}}", repeat_bar).replace(
         "{{SUMMARY}}", summary_block).replace(
         "{{JUDGE_NOTICE}}", judge_notice,
     ).replace(
@@ -877,7 +1184,7 @@ def answer_comparison_html(
     ).replace(
         "{{SUBTITLE}}", subtitle,
     ).replace(
-        "{{SECTIONS}}", "".join(sections) or
+        "{{SECTIONS}}", body or
         '<p class="missing">No evaluations matched the selected repeat.</p>'
     )
 
@@ -950,7 +1257,11 @@ aside h2 {
 }
 .toc { list-style: none; margin: 0; padding: 0; counter-reset: q; }
 .toc-flat { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-.toc-flat a::before { content: "◈"; color: var(--blue); }
+.toc-flat > li > a::before { content: "◈"; color: var(--blue); }
+.subtoc { list-style: none; margin: 0 0 4px; padding: 0 0 0 18px; }
+.subtoc a { padding: 3px 9px; }
+.subtoc a::before { content: "·"; color: var(--faint); }
+.subtoc .tname { font-size: 11px; }
 .toc a {
   display: flex; gap: 8px; align-items: baseline; padding: 6px 9px;
   border-radius: 5px; text-decoration: none; color: var(--ink);
@@ -1043,43 +1354,62 @@ table.expect td:first-child { width: 18px; text-align: center; }
 .metrics .num, .metrics .delta { text-align: right; font-variant-numeric: tabular-nums; }
 .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
 .missing { color: var(--faint); font-style: italic; font-size: 12.5px; }
+.repeats[hidden] { display: none; }
 .repeats { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-  padding:10px 96px; border-bottom:1px solid #E2E8F0; background:#F4F6F9; }
+  padding:10px 24px; border-bottom:1px solid #E2E8F0; background:#F4F6F9; }
 .repeats .rlabel { font-size:11px; font-weight:700; letter-spacing:.1em;
   text-transform:uppercase; color:#4A5568; }
-.repeats .rtab { font:inherit; font-size:13px; font-weight:600; cursor:pointer;
+.repeats .rtab, .repeats .ctab {
+  font:inherit; font-size:13px; font-weight:600; cursor:pointer;
   padding:4px 14px; border:1px solid #E2E8F0; background:#FFFFFF; color:#4A5568;
   border-radius:2px; }
-.repeats .rtab[aria-selected="true"] { background:#006FCF; border-color:#006FCF;
-  color:#FFFFFF; }
+.repeats .rtab[aria-selected="true"], .repeats .ctab[aria-selected="true"] {
+  background:#006FCF; border-color:#006FCF; color:#FFFFFF; }
 .repeats .rnote { font-size:12px; color:#4A5568; margin-left:auto; }
-</style></head><body>
+/* The case selector sits above the repeat selector and reads as the outer
+   choice: pick a customer, then pick a repeat of it. */
+.repeats.cases { background:#FFFFFF; }
+.repeats.cases .ctab { font-family: var(--mono); font-size:12px; }
+table.facts { table-layout: fixed; width: 100%; }
+table.facts th:nth-child(1), table.facts td:nth-child(1) { width: 30px; }
+table.facts th:nth-child(2), table.facts td:nth-child(2) { width: 34px;
+  text-align: center; }
+table.facts th:nth-child(3), table.facts td:nth-child(3) { width: 96px; }
+table.facts th:nth-child(4), table.facts td:nth-child(4) { width: auto; }
+table.facts td { overflow-wrap: anywhere; }
+/* Why a claim did not ground. Red because it is the one thing on the row a
+   reader is looking for once the marker says it failed. */
+.facts .why {
+  color: var(--bad); font-size: 11.5px; line-height: 1.35; margin-top: 2px;
+}
+.facts .why::before { content: "→ "; opacity: 0.7; }  /* Literal characters. `_PAGE` is a non-raw Python string, so a
+     CSS hex escape here is read as an OCTAL escape at import time
+     and ships control bytes into the stylesheet. */
+</style></head><body class="hide-restated">
 <header>
   <h1>Answer comparison</h1>
   <div class="sub">{{SUBTITLE}}</div>
 </header>
 <div class="toolbar">
-  <label><input type="checkbox" id="hide-restated"> hide restated claims</label>
+  <label><input type="checkbox" id="hide-restated" checked> hide restated claims</label>
 </div>
 <div class="tabs" role="tablist">
-  <button role="tab" data-tab="facts" aria-selected="true">Answers &amp; atomic facts</button>
-  <button role="tab" data-tab="metrics" aria-selected="false">Metrics</button>
+  <button role="tab" data-tab="metrics" aria-selected="true">Metrics</button>
+  <button role="tab" data-tab="claims" aria-selected="false">Answers &amp; claims</button>
 </div>
+{{CASES}}
 {{REPEATS}}
 {{NOTICE}}{{JUDGE_NOTICE}}
-<div class="legend">
+<div class="legend" data-only-tab="claims" hidden>
   <b>gnd</b> <code>◆</code> factual — the run recorded a route to operations
   on specific tables, and that route answers the question asked
   <code>◇</code> report — drawn from the curated report files, which resolve
-  <code>○</code> neither; hover for the cited provenance and any evaluator
-  failure &nbsp;·&nbsp;
-  <b>elg</b> <code>✓</code> the route answers the question asked
-  <code>✗</code> it answers a different one <code>?</code> no recorded
-  operation to rule on &nbsp;·&nbsp;
+  <code>○</code> neither; the red line says why, and hover gives the detail
+  &nbsp;·&nbsp;
   a row with no markers is a restatement, counted once and not re-verified
 </div>
 <div class="content-grid">
-  <aside><h2>Questions</h2>{{TOC}}</aside>
+  <aside>{{TOC}}</aside>
   <main>{{SUMMARY}}{{SECTIONS}}</main>
 </div>
 <script>
@@ -1107,27 +1437,55 @@ function showTab(name) {
   });
 }
 
-// Repeats switch the ANSWERS only. Metrics stay totalled over every repeat —
-// a rate that changed with the panel on screen would be a different metric,
-// not a different view of one.
-function showRepeat(index) {
-  document.querySelectorAll('.repeats .rtab').forEach(b => {
-    b.setAttribute('aria-selected', String(b.dataset.repeat === index));
+// Case and repeat switch the ANSWERS only. Metrics stay totalled over every
+// case and repeat — a rate that changed with the panel on screen would be a
+// different metric, not a different view of one.
+//
+// A panel is shown only when it matches BOTH selections: the two selectors are
+// coordinates on one grid, not independent filters.
+let currentRepeat = document.querySelector('.rtab[aria-selected="true"]')?.dataset.repeat
+  ?? document.querySelector('.rpane')?.dataset.repeat ?? null;
+let currentCase = document.querySelector('.ctab[aria-selected="true"]')?.dataset.case ?? null;
+
+function applySelection() {
+  document.querySelectorAll('.rtab').forEach(b => {
+    b.setAttribute('aria-selected', String(b.dataset.repeat === currentRepeat));
+  });
+  document.querySelectorAll('.ctab').forEach(b => {
+    b.setAttribute('aria-selected', String(b.dataset.case === currentCase));
   });
   document.querySelectorAll('.rpane').forEach(panel => {
-    panel.hidden = panel.dataset.repeat !== index;
+    const repeatMatches = currentRepeat === null
+      || panel.dataset.repeat === currentRepeat;
+    const caseMatches = currentCase === null
+      || panel.dataset.case === undefined
+      || panel.dataset.case === currentCase;
+    panel.hidden = !(repeatMatches && caseMatches);
   });
 }
-document.querySelectorAll('.repeats .rtab').forEach(button => {
-  button.addEventListener('click', () => showRepeat(button.dataset.repeat));
+document.querySelectorAll('.rtab').forEach(button => {
+  button.addEventListener('click', () => {
+    currentRepeat = button.dataset.repeat;
+    applySelection();
+  });
 });
+document.querySelectorAll('.ctab').forEach(button => {
+  button.addEventListener('click', () => {
+    currentCase = button.dataset.case;
+    applySelection();
+  });
+});
+applySelection();
 
 const tabs = document.querySelectorAll('.tabs button');
 tabs.forEach(button => button.addEventListener('click', () => showTab(button.dataset.tab)));
+showTab(document.querySelector('.tabs button[aria-selected="true"]')?.dataset.tab
+        ?? 'metrics');
 
-// Restated claims are shown by default: hiding redundancy by default
-// would hide a finding. The toggle is for reading, not for scoring —
-// the metrics already count each fact once.
+// Restated claims are HIDDEN by default, so the page and the metrics agree:
+// a restatement is one claim stated twice and the metrics already count it
+// once. Unticking shows the redundancy itself, which is a finding about the
+// answer's shape rather than about its content.
 const hideRestated = document.getElementById('hide-restated');
 hideRestated.addEventListener('change', () => {
   document.body.classList.toggle('hide-restated', hideRestated.checked);

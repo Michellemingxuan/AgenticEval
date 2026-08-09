@@ -8,6 +8,11 @@ dist/
 build/
 *.egg-info/
 
+# Secrets: the judge's API key lives here.
+.env
+.env.*
+!.env.example
+
 .DS_Store
 # Scratch: design PDFs and probe configs generated while iterating.
 tmp/

@@ -20,14 +20,6 @@ from agentic_eval.content.aggregate import (
     aggregate_content_evaluations,
 )
 from agentic_eval.content.claims import _normalize_claim
-from agentic_eval.content.compare_view import (
-    answer_comparison_html,
-    find_run_manifest,
-    find_run_summary,
-    resolve_view_defaults,
-    select_repeat,
-    write_answer_comparison,
-)
 from agentic_eval.content.document import (
     parse_answer_document,
     table_cell_coverage,
@@ -43,13 +35,6 @@ from agentic_eval.content.oracles import evaluate_expected_answers
 from agentic_eval.content.pipeline import ContentEvaluator, evaluate_runs_file
 from agentic_eval.content.prompts import (
     EXTRACT_PROMPT,
-)
-from agentic_eval.content.report import (
-    WALKTHROUGH_LEGEND,
-    content_comparison_markdown,
-    content_walkthrough_markdown,
-    write_content_walkthrough,
-    write_evidence_review_packets,
 )
 from agentic_eval.content.verdicts import (
     CLAIM_STANCES,
@@ -71,12 +56,8 @@ from agentic_eval.common.coerce import (
 )
 
 __all__ = [
-    "answer_comparison_html",
     "find_run_manifest",
-    "find_run_summary",
     "resolve_view_defaults",
-    "select_repeat",
-    "write_answer_comparison",
     "CLAIM_STANCES",
     "CORRECTNESS_VERDICTS",
     "ContentEvaluator",
@@ -101,13 +82,9 @@ __all__ = [
     "aggregate_content_evaluations",
     "build_evidence_ledger",
     "calculate_content_metrics",
-    "content_comparison_markdown",
-    "content_walkthrough_markdown",
     "evaluate_expected_answers",
     "evaluate_runs_file",
     "parse_answer_document",
     "read_jsonl",
     "table_cell_coverage",
-    "write_content_walkthrough",
-    "write_evidence_review_packets",
 ]

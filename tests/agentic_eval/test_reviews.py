@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from agentic_eval.reviews import aggregate_review_files
+from agentic_eval.review import aggregate_review_files
 
 
 def test_review_scores_remain_separated_by_system(tmp_path: Path):

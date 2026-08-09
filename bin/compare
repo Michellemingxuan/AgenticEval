@@ -6,8 +6,36 @@
 #               --question b2_tsr_cdss_reaction --question b4_abnormal_transactions \
 #               --repeats 1 --case-id 366132845011
 #
-# Anything not passed falls back to the config. `--question` may repeat or take
-# a comma-separated list; an unknown name fails before either system starts.
+# Several cases in one run — every question is asked about every case, and the
+# page gets a case selector:
+#
+#   bin/compare --config experiments/configs/series_abcd.yaml \
+#               --case-id 366132845011 --case-id '11854808010 '
+#   bin/compare --config experiments/configs/series_abcd.yaml \
+#               --cases-from ../AgenticSys_v2/data_tables/real
+#
+# Quote a case id: one of the real case folders ends in a space, and the id
+# must keep it to match the case on disk.
+#
+# Cheap end-to-end check before spending on a full pass — a saved selection
+# from `experiment.scopes`, so it is one word rather than a line of flags:
+#
+#   bin/compare --config experiments/configs/series_abcd.yaml --scope smoke \
+#               --cases-from ../AgenticSys_v2/data_tables/real
+#
+# `smoke` there is 4 questions across 3 sets at k=2 over both cases — 32
+# records against the full run's 216, and still enough to exercise the per-set
+# tables and the case and repeat tabs. Read it as a check, not a measurement.
+#
+# To measure a SUBSET instead, use a question scope: it narrows what is asked
+# and leaves k and the cases as the config has them.
+#
+#   bin/compare --config experiments/configs/series_abcd.yaml \
+#               --question-scope series_b
+#
+# Anything not passed falls back to the config. `--question` and `--case-id`
+# may repeat; an unknown question fails before either system starts, as does a
+# follow-up selected without the turn it refers to.
 set -euo pipefail
 
 CONFIG="" ; ARGS=() ; ENV_FILE="${AGENTIC_EVAL_ENV:-../AgenticSys_v2/.env}"
@@ -15,10 +43,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)      CONFIG="$2"; ARGS+=(--config "$2"); shift 2 ;;
     --env-file)    ENV_FILE="$2"; shift 2 ;;
-    --question|--case-id|--repeats|--mode|--baseline-cwd|--candidate-cwd)
+    --question|--scope|--question-scope|--case-id|--cases-from|--repeats|--workers|--mode|--baseline-cwd|--candidate-cwd)
                    ARGS+=("$1" "$2"); shift 2 ;;
     --skip-run)    SKIP_RUN=1; shift ;;
-    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)             echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -31,7 +59,16 @@ if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
 echo "== plan"
 agentic-eval validate "${ARGS[@]}" | python3 -c '
 import json,sys; d=json.load(sys.stdin)
-print("   %d records over %s" % (d.get("planned_records", 0), d.get("mode", "?")))'
+cases = d.get("cases") or []
+sets = d.get("question_sets") or {}
+print("   %d records over %s, %d question(s) in %d set(s), %d case(s), %d worker(s)" % (
+    d.get("planned_records", 0), d.get("mode", "?"),
+    len(d.get("questions") or []), max(1, len(sets)),
+    max(1, len(cases)), d.get("workers", 1)))
+for name, qs in sets.items():
+    print("     set %s: %d questions" % (name, len(qs)))
+for case in cases:
+    print("     case %s" % (repr(case) if case != case.strip() else case))'
 
 echo "== run"
 OUT=$(agentic-eval run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
@@ -46,8 +83,9 @@ cat <<EOF
                                  evidence ledger, tokens, latency, memory offered
   content/evaluations.jsonl      one record per answer, scored: claims, per-claim
                                  grounding and routes, must-haves, oracles, metrics
-  content/answer_comparison.html the page — answers side by side, atomic facts with
-                                 their markers, metrics per question and overall
+  content/answer_comparison.html the page — metrics first, then answers side by
+                                 side with their claims and markers; case and
+                                 repeat selectors switch which answers are shown
   content/walkthrough.md         the same, as text: answer -> claims -> numbers
   content/comparison.md          one scorecard table, both systems, every question
   content/summary.json           aggregated metrics, for a script to read

@@ -10,6 +10,12 @@ class Question:
     name: str
     text: str
     evaluation: dict[str, Any] = field(default_factory=dict)
+    #: Which set this question belongs to — normally the questions file it came
+    #: from. A set is a CONVERSATION: in stateful mode it gets its own session,
+    #: so questions in different sets cannot see each other's turns. Series D
+    #: exists to ask series B's last question with none of B's context, and
+    #: sharing one session made it a repeat of B9 rather than a cold ask.
+    question_set: str = ""
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,11 @@ class RunRequest:
     run_index: int
     mode: str
     sequence_position: int | None = None
+    #: Which case this turn asked about. Carried on every record so a run over
+    #: several cases can be read per case — without it the answers pool into
+    #: one undifferentiated set and a per-case view is impossible after the
+    #: fact, since nothing else in the record identifies the subject.
+    case_id: str | None = None
 
 
 #: Bumped when the adapter starts capturing a field the evaluator needs. A run
@@ -28,7 +39,12 @@ class RunRequest:
 #:
 #:   2  episodic_turns_exposed / kb_topics_exposed — memory as content, not a
 #:      flag, so leverage can be judged and audited against what was offered
-RECORD_SCHEMA = 2
+#:   3  case_id — which case a turn asked about, so a multi-case run can be
+#:      read per case
+#:   4  question_set — which set the turn belongs to. Sets are separate
+#:      sessions, so a run before this bump asked every set in one
+#:      conversation and its cold-ask questions were not cold
+RECORD_SCHEMA = 4
 
 
 @dataclass
@@ -77,7 +93,9 @@ class AdapterResult:
         return {
             "record_schema": RECORD_SCHEMA,
             "system": system,
+            "case_id": request.case_id,
             "mode": request.mode,
+            "question_set": request.question.question_set,
             "name": request.question.name,
             "question": request.question.text,
             "evaluation": request.question.evaluation,

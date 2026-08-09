@@ -8,10 +8,17 @@ version: 1
 # ◇ marker exists to surface it, and `evidence_contradicting_pattern` scored
 # ◇11 ◆0 precisely because the system narrated a report instead of measuring.
 #
-# Here the question says "from the report", so ◇ is the expected shape and a
-# high report-grounded share is not a defect. What IS a defect is the reverse
-# failure: answering from the tables while claiming to summarise the report,
-# or attributing to the report something it does not say.
+# Here the question says "from the report", so ◇ is the expected shape WHERE A
+# REPORT EXISTS — and a high report-grounded share is not a defect. But one of
+# the real cases has no curated report at all, only chart PNGs, and there ◆ is
+# the correct shape: analysing the live spend tables and saying so is the right
+# answer, not a fallback.
+#
+# What IS a defect is misattribution either way: answering from the tables
+# while claiming to summarise the report, or attributing to the report
+# something it does not say. `previous` does exactly the first — on the case
+# with no reports its report_agent still answers "the reviewed reports"
+# analyse total spend and frequency, with no file read anywhere in the run.
 #
 # Read this series' `report grounded` row as the target, not the alarm — and
 # read `factual grounded` beside it, because a summary that silently swaps in
@@ -22,19 +29,29 @@ questions:
     question: "Summarize the spending patterns from the report."
     evaluation:
       must_have_points:
-        - id: mh_report_is_the_source
+        # Not every case HAS a curated report — one of the real cases holds
+        # nothing but chart PNGs. So the point is not "read the report", it is
+        # "be right about where the answer came from". Both routes pass; only
+        # a route the answer misrepresents fails.
+        - id: mh_source_is_stated_correctly
           description: >-
-            Summarise what the CURATED REPORT says about spending, and make
-            clear that is the source. An answer that re-derives the patterns
-            from the tables has answered a different question — the report's
-            account is what was asked for, including where it is thin.
+            Say where the summary comes from, and be right about it. If curated
+            reports exist for this case, summarise what they say and attribute
+            it to them. If there are NO reports, saying so and analysing the
+            live spend tables instead is fully correct — an answer is not
+            penalised for a report that does not exist. What fails is
+            misattribution in either direction: presenting live analysis as
+            the report's account, or claiming the report is silent when it is
+            not.
         - id: mh_patterns_are_specific
           description: >-
             Report specific patterns — merchants, categories, periods,
             magnitudes — rather than "spending was elevated". Whatever
-            specificity the report carries should survive the summary.
+            specificity the source carries should survive the summary,
+            whether that source is the report or the tables.
         - id: mh_attribution_is_honest
           description: >-
             Do not attribute to the report figures or findings it does not
-            contain. If the report is silent or incomplete on a pattern, say
-            so rather than filling the gap from live data without flagging it.
+            contain, and do not describe reports as "reviewed" or "analysed"
+            when none were read. If the report is silent, incomplete, or
+            absent, say so rather than filling the gap unflagged.

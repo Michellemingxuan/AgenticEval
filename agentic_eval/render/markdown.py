@@ -8,8 +8,25 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from agentic_eval.content.evidence import MEASURED_SOURCES
+from agentic_eval.render.markers import (
+    ELIGIBILITY_MARKER as _STEP_MARKER,
+    GROUNDING_MARKER as _GROUNDING_MARKER,
+)
 from agentic_eval.layout import RunLayout
+
+
+def _measured_sources() -> tuple[str, ...]:
+    """Imported at call time, deliberately.
+
+    `render` must not depend on `content` at module scope: content's package
+    init loads the pipeline, which loads this module to write its artifacts,
+    and the cycle only shows up once the two live in different packages.
+    Presentation reading one vocabulary constant from the evaluator is fine;
+    presentation being a build-time dependency of it is not.
+    """
+    from agentic_eval.content.evidence import MEASURED_SOURCES
+
+    return MEASURED_SOURCES
 
 
 def content_comparison_markdown(
@@ -63,15 +80,8 @@ def content_comparison_markdown(
     return "\n".join(lines)
 
 
-#: One marker per claim, counted straight off `grounding_kind` so the page and
-#: the rates beside it cannot drift.
-_GROUNDING_MARKER = {"factual": "◆", "report": "◇", "none": "○"}
 
 
-#: Whether the route that produced the claim answers the question asked.
-_STEP_MARKER = {
-    "yes": "✓", "no": "✗", "unavailable": "?", "not_applicable": "–",
-}
 
 
 WALKTHROUGH_LEGEND = (
@@ -92,10 +102,10 @@ def _claim_marker_row(claim: dict[str, Any], fact: dict[str, Any]) -> str:
 
 
 def content_walkthrough_markdown(evaluation: dict[str, Any]) -> str:
-    """Render one answer as answer → atomic facts → numeric verdicts.
+    """Render one answer as answer → claims → numeric verdicts.
 
     The point is to make a verdict inspectable in one screen: which span of the
-    raw answer became which atomic fact, and what each fact was checked against.
+    raw answer became which claim, and what each fact was checked against.
     A rate is not reviewable; a marked-up answer is.
     """
     facts = {row["claim_id"]: row for row in evaluation.get("fact_results") or []}
@@ -117,7 +127,7 @@ def content_walkthrough_markdown(evaluation: dict[str, Any]) -> str:
         str(evaluation.get("answer") or "").rstrip(),
         "```",
         "",
-        "### 2. Atomic facts",
+        "### 2. Claims",
         "",
         WALKTHROUGH_LEGEND,
         "",
@@ -131,7 +141,7 @@ def content_walkthrough_markdown(evaluation: dict[str, Any]) -> str:
         kind = str(block.get("type") or "")
         lines.append(f"**`{block_id}` {kind}**")
         lines.append("")
-        lines.append("| gnd | elg | claim | atomic fact |")
+        lines.append("| gnd | elg | claim | claim |")
         lines.append("|:-:|:-:|---|---|")
         for claim in block_claims:
             fact = facts.get(claim.get("claim_id"), {})
@@ -248,7 +258,7 @@ def write_content_walkthrough(
         content_walkthrough_markdown(evaluation) for evaluation in evaluations
     )
     path.write_text(
-        "# Content walkthrough\n\nRaw answer → atomic facts → numeric verdicts, "
+        "# Content walkthrough\n\nRaw answer → claims → numeric verdicts, "
         "one section per evaluated answer.\n\n" + body,
         encoding="utf-8",
     )
@@ -288,7 +298,7 @@ def write_evidence_review_packets(
                 ],
                 "provenance_note": (
                     "System tool-result provenance supplied."
-                    if any(item.get("source_type") in MEASURED_SOURCES for item in ledger)
+                    if any(item.get("source_type") in _measured_sources() for item in ledger)
                     else "System tool-result provenance was not captured by this version."
                 ),
                 "claim_reviews": [

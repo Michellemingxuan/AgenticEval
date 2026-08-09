@@ -41,11 +41,25 @@ def _merge_duplicate_evidence(kept: dict[str, Any], duplicate: dict[str, Any]) -
 MEASURED_SOURCES = ("tool_result", "memory")
 
 
-#: Tool names that hand back curated report material rather than a fresh
-#: measurement: the report-writing specialist, and any file reader replaying a
-#: report the run wrote earlier. Matched as substrings so `fs_read_file`,
-#: `read_file` and `report_agent` are all caught without a per-system list.
-_REPORT_TOOLS = ("report", "fs_read", "read_file", "file_read")
+#: Tools that hand back the CONTENT of a curated report: a file reader
+#: replaying a report the run wrote earlier. Matched as substrings so
+#: `fs_read_file`, `read_file` and `file_read` are all caught without a
+#: per-system list.
+_REPORT_TOOLS = ("fs_read", "read_file", "file_read")
+
+#: The report-writing specialist. Named separately because its OUTPUT is not
+#: report material — it is a specialist's prose, and it is emitted whether or
+#: not any report was there to read.
+#:
+#: Measured: on a case whose report folder holds nothing but PNG charts,
+#: `previous` ran `report_agent` anyway and it answered "Total spend, spend
+#: frequency and temporal distribution are analyzed in the reviewed reports"
+#: with `coverage: implicit`. Seven claims were credited as report-grounded on
+#: the strength of that sentence, with no file read anywhere in the run.
+#:
+#: So the same rule the prompts apply to measurements applies here: cite what
+#: HELD the material, not who summarised it.
+_REPORT_AGENTS = ("report_agent",)
 
 
 def _is_report_evidence(item: dict[str, Any]) -> bool:
@@ -62,6 +76,11 @@ def _is_report_evidence(item: dict[str, Any]) -> bool:
     if str(item.get("source_type") or "") == "report":
         return True
     tool = str(item.get("tool") or "").lower()
+    if any(token in tool for token in _REPORT_AGENTS):
+        # The specialist's own summary. Report material only if it actually
+        # read something — otherwise it is prose about reports that may not
+        # exist, and crediting it invents provenance the run never had.
+        return str(item.get("source_type") or "") == "tool_result"
     return any(token in tool for token in _REPORT_TOOLS)
 
 

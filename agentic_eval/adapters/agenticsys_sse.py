@@ -536,7 +536,10 @@ class AgenticSysSSEAdapter(SystemAdapter):
     def __init__(self, config: dict[str, Any]) -> None:
         super().__init__(config)
         self.base_url = str(config["base_url"]).rstrip("/")
-        self.case_id = str(config["case_id"])
+        # Optional: a multi-case run carries the case on each request instead,
+        # and configuring one there would silently pin every turn to it.
+        case_id = config.get("case_id")
+        self.case_id = str(case_id) if case_id is not None else None
         self.trace_db = config.get("trace_db")
         self.headers = {
             str(k): str(v) for k, v in (config.get("headers") or {}).items()
@@ -580,9 +583,25 @@ class AgenticSysSSEAdapter(SystemAdapter):
         if status != 200:
             raise RuntimeError(f"healthcheck returned HTTP {status}")
 
-    def reset(self) -> None:
-        quoted = urllib.parse.quote(self.case_id, safe="")
-        path = self.reset_path.format(case_id=quoted)
+    def _quoted_case(self, case_id: str | None) -> str:
+        """The case to address, request first, configuration second.
+
+        Raising here rather than defaulting: a turn sent to the wrong case
+        returns a well-formed answer about a different customer, which no
+        downstream check can detect.
+        """
+        resolved = case_id if case_id is not None else self.case_id
+        if resolved is None:
+            raise RuntimeError(
+                "no case id: set systems.<name>.config.case_id or "
+                "experiment.cases"
+            )
+        # `safe=""` also encodes the trailing space that one real case folder
+        # carries in its name, so the id survives the round trip intact.
+        return urllib.parse.quote(resolved, safe="")
+
+    def reset(self, case_id: str | None = None) -> None:
+        path = self.reset_path.format(case_id=self._quoted_case(case_id))
         status, _ = self._request_json(
             "POST", path, {}, 30,
         )
@@ -590,7 +609,7 @@ class AgenticSysSSEAdapter(SystemAdapter):
             raise RuntimeError(f"rewind returned HTTP {status}")
 
     def run(self, request: RunRequest, timeout_s: float) -> AdapterResult:
-        quoted = urllib.parse.quote(self.case_id, safe="")
+        quoted = self._quoted_case(request.case_id)
         turn_path = self.turn_path.format(case_id=quoted)
         stream_path = self.stream_path.format(case_id=quoted)
         started = time.perf_counter()
