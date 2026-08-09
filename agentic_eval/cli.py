@@ -379,7 +379,7 @@ def main() -> None:
     )
     content_parser.add_argument(
         "--resume", action="store_true",
-        help="append only answers not already present in content_evaluations.jsonl",
+        help="append only answers not already present in content/evaluations.jsonl",
     )
     walkthrough_parser = subparsers.add_parser(
         "walkthrough",

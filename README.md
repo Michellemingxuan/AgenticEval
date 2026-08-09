@@ -3,33 +3,49 @@
 Standalone, black-box comparison framework for two versions of an agentic Q&A
 system. The evaluator does not import either system under test.
 
-Start with:
+Check a config without starting anything, then run one end to end:
 
 ```bash
 python -m agentic_eval validate \
-  --config experiments/templates/compare_versions.example.yaml
+  --config experiments/templates/compare_versions.template.yaml
 
-python -m agentic_eval run \
-  --config experiments/templates/compare_versions.example.yaml
+pip install -e .                              # puts `agentic-eval` on PATH
+bin/compare --config experiments/configs/series_abcd.yaml --scope smoke
 ```
+
+`bin/compare` is the whole chain — run both systems, judge the answers, build
+the page. [Running a comparison](#running-a-comparison) covers its flags;
+`--scope smoke` is the cheap end-to-end check to start from.
 
 `experiment.repeats` is the shared repetition count `k`. Each system receives
 the same question set `k` times. The resulting physical runs are reused for all
-three analyses: latency/resources, orchestration consistency, and content
-quality. There is no separate content-repeat setting that could accidentally
-evaluate a different sample.
+four analyses: latency/resources, orchestration consistency, memory use, and
+content quality. There is no separate content-repeat setting that could
+accidentally evaluate a different sample.
 
 For every system/question, latency output contains raw run values plus mean,
-median, standard deviation, p95, maximum, and Tukey-IQR outliers. Token counts,
-LLM-call counts, and retry counts receive the same distribution summary; retry
-rate is the percentage of instrumented runs with at least one retry.
+median, standard deviation, min, p95, maximum, and Tukey-IQR outliers — the
+last exposed only at k≥4, since with three observations an "outlier" is an
+artifact of the method. Token counts, LLM-call counts, and retry counts receive
+the same distribution summary; retry rate is the percentage of instrumented
+runs with at least one retry.
 
 Consistency is reported at three levels:
 
-- team construction: exact modal-team consistency and pairwise team Jaccard;
-- tool usage: tool-name consistency plus normalized tool-call consistency,
-  including arguments and repeated calls;
-- subqueries: mean pairwise, per-specialist lexical-token Jaccard.
+- team construction: `team_exact_consistency` and `team_pairwise_jaccard`;
+- tool usage: `tool_exact_consistency` over names, plus
+  `tool_call_pairwise_multiset_jaccard` over normalized calls — arguments and
+  repeated calls included;
+- subqueries: `subquery_pairwise_similarity`, mean per-specialist lexical-token
+  Jaccard.
+
+Tool-call signatures are normalized before comparison, or the same work counts
+as a difference: nested JSON arguments are canonicalised, a batch call is
+expanded into the N single calls it stands for
+(`batch_summarize_trend` → N × `summarize_trend`), equivalent month bounds are
+widened to one form, and column aliases are resolved from the result payloads.
+`tool_call_runs_not_comparable` marks the pairs where that could not be done,
+rather than scoring them as disagreement.
 
 Memory evaluation is explicitly annotated in the question set:
 
@@ -43,7 +59,8 @@ For each required question, `memory_used` is `true` when the run records a
 memory-use signal and `false` otherwise. `memory_hit_rate` is the percentage of
 required runs where `memory_used` is true. Questions marked false or left
 unannotated are excluded. See
-[the memory question example](experiments/templates/questions.memory.example.yaml).
+[the memory question template](experiments/templates/questions.memory.template.yaml).
+(`text:` and `question:` are accepted interchangeably for the prompt.)
 
 See [the comparison framework guide](docs/agentic-eval-comparison-framework.md)
 for configuration, experiment design, metrics, and review workflow.
@@ -63,21 +80,32 @@ without the others.
 ```
 agentic_eval/
   common/          coerce.py  stats.py  io.py        shared primitives
-  adapters/        agenticsys_sse.py                 black-box system access
-  modules/         consistency.py  content.py        one file per dimension,
+  adapters/        agenticsys_sse.py  base.py        black-box system access
+  dimensions/      consistency.py  content.py        one file per dimension,
                    latency.py  memory.py              each exposing section(rows)
   content/         document -> claims -> evidence    the content cascade
                    -> numeric -> verify -> oracles
-                   -> metrics -> aggregate -> report
-  scoring.py       composes modules/, compares systems
+                   -> metrics -> aggregate -> verdicts
+  render/          page.py  markdown.py              the viewer and the reports
+                   markers.py  run_summary.py
+  config.py        one config object, paths resolved
+  layout.py        every path in a run folder, in one place
+  cases.py         which cases a run covers
+  workers.py       per-worker ports, logs and trace DBs
+  memory_store.py  snapshot/restore of the system's memory store
+  toolcalls.py     tool-call payloads, outcomes and counts
+  process.py       launching and stopping the systems
+  review.py        blinded human-review aggregation
+  scoring.py       composes dimensions/, compares systems
   runner.py        drives the systems; writes runs.jsonl
   cli.py           thin dispatcher
 ```
 
 `agentic_eval.content` re-exports its public surface, so callers import from
-the package, not its internals. `agentic_eval.modules.EVAL_MODULES` is the one
-registry a dimension is selected from; `scoring.SECTION_BUILDERS` derives from
-it.
+the package, not its internals. `agentic_eval.dimensions.EVAL_MODULES` is the
+one registry a dimension is selected from; `scoring.SECTION_BUILDERS` derives
+from it. `layout.RunLayout` owns every filename a run writes, so the folder
+shape can be changed without grepping for string literals.
 
 The four dimensions are `consistency`, `content`, `latency`, and `memory`.
 Per-invocation overrides let one YAML serve a whole sweep, without templating a
@@ -110,7 +138,7 @@ omission.
 
 ```
 configs/     what to run       questions/  what to ask
-oracles/     what is true      examples/   templates
+oracles/     what is true      templates/  starting points to copy
 results/  traces/              output, gitignored
 ```
 
@@ -125,13 +153,21 @@ it from the candidate's own test directory couples the two: the baseline
 checkout carries its own copy, and if the copies drift the systems are
 answering different questions while the report still calls it a comparison.
 
-[`experiments/questions/simple.yaml`](experiments/questions/simple.yaml) is the
-simple-question suite — six questions whose right answer a Python script can
-compute, so correctness never depends on a judge. Run it with:
+The working suite is
+[`experiments/configs/series_abcd.yaml`](experiments/configs/series_abcd.yaml)
+— **18 questions in four sets**, each set its own file and its own session:
 
-```bash
-python -m agentic_eval run --config experiments/configs/simple_questions.yaml
-```
+| set | questions | settled by |
+|---|---|---|
+| `series_a` | 7 | an oracle script — no judge is consulted |
+| `series_b` | 9 | a rubric, as one nine-turn conversation |
+| `series_c` | 1 | a rubric: summarise the report, or say there is none |
+| `series_d` | 1 | series B's last question, asked cold |
+
+At the config's `repeats: 3` over two cases that is 216 records for two
+systems. [`questions/simple.yaml`](experiments/questions/simple.yaml) is a
+smaller six-question oracle-only suite, run with
+`--config experiments/configs/simple_questions.yaml`.
 
 Question, expectations, and oracle are one unit: each question carries its own
 `evaluation` block inline, so there is no name-matching step to get wrong.
@@ -162,34 +198,39 @@ then point the evaluator at the resulting `runs.jsonl`:
 
 ```bash
 python -m agentic_eval evaluate-content \
-  --config experiments/templates/compare_versions.example.yaml \
+  --config experiments/configs/series_abcd.yaml \
   --runs experiments/results/<run-folder>/runs.jsonl
 ```
 
-Use `--limit 2` for a low-cost prompt/evidence calibration pass before judging
-all repetitions. Use `--resume` after an interruption to keep completed judge
-results and evaluate only missing answers. The command writes:
+Calibrate before spending a full pass: `--limit 2` judges the first two
+eligible answers, and `--question <name>` judges one question across every
+repeat and case. Use `--resume` after an interruption to keep completed judge
+results and evaluate only missing answers.
 
-- `content_evaluations.jsonl`: claims, evidence links, verdicts, and judge-call
+Re-judging a subset **preserves the questions it did not touch** — an earlier
+version truncated the file to what it had just judged, which silently discarded
+eight completed evaluations. The command writes, inside `<run>/`:
+
+- `content/evaluations.jsonl`: claims, evidence links, verdicts, and judge-call
   telemetry for every answer;
-- `content_summary.json`: per-system/mode/question means, sample standard
+- `content/summary.json`: per-system/mode/question means, sample standard
   deviations, min/max values, and values by run index across all `k` runs;
-- `content_comparison.md`: human-readable baseline/candidate scorecard.
-- `content_walkthrough.md`: raw answer → atomic facts → numeric verdicts, one
+- `content/comparison.md`: human-readable baseline/candidate scorecard;
+- `content/walkthrough.md`: raw answer → atomic facts → numeric verdicts, one
   marked-up section per answer, so a rate can be traced back to the span that
   produced it;
-
-- `answer_comparison.html`: a self-contained viewer for **one sampled repeat** —
-  both versions' raw answers side by side, their atomic facts with the cascade
-  markers, and the per-question metrics, on three tabs;
-
-all inside `<run>/content` by default, rather than beside the run's own outputs.
+- `content/answer_comparison.html`: the self-contained viewer — metrics over
+  every repeat, and the answers for **one sampled repeat and case** side by
+  side, on two tabs;
+- `review/answers.csv`, `review/answers.key.csv`, `review/evidence.jsonl`,
+  `review/evidence.key.csv`: blinded human-review packets, with the system
+  identity held in a separate key file.
 
 Regenerate the viewer alone, choosing which repeat to sample:
 
 ```bash
 python -m agentic_eval compare-answers \
-  --evaluations experiments/results/<run>/content/content_evaluations.jsonl
+  --evaluations experiments/results/<run>/content/evaluations.jsonl
 ```
 
 Everything else is defaulted. `--baseline` and `--candidate` come from the run's
@@ -209,14 +250,11 @@ A repeat is shown, never an average: averaging answers is meaningless, and
 reading one real pair is how a rate gets sanity-checked. The command prints
 which systems it picked and where they came from.
 
-- `evidence_review.jsonl` and `evidence_review_key.csv`: blinded Phase-B
-  claim/evidence review packets with the system identity kept in a separate key.
-
 Regenerate the walkthrough alone, without re-judging:
 
 ```bash
 python -m agentic_eval walkthrough \
-  --evaluations experiments/results/<run-folder>/content_evaluations.jsonl
+  --evaluations experiments/results/<run-folder>/content/evaluations.jsonl
 ```
 
 Numeric content is reported as a three-step cascade, each step's denominator
@@ -248,7 +286,10 @@ that merely name a metric (`30+ DPD`) are immaterial.
 derivable from none, or a materially wrong tool, so a real number answers the
 wrong question. A located-but-mismatched value is an arithmetic defect, not a
 hallucination; a run with no captured provenance is missing instrumentation.
-`trace_failure_counts` decomposes the failing branch by cause.
+`failure_counts` decomposes the failing branch by cause, and a handful of
+causes are **disclosed but never charged** — `not_a_quantity` and
+`stated_constant` are judge-side errors, not the system's, so they appear in
+the breakdown and stay out of the numerator.
 
 For questions a script can answer outright, no judge is consulted. Add
 `expected_answers` to a question's rubric with either a literal `value` or a
@@ -263,17 +304,49 @@ count of zero. See
 
 Claims without numbers get their own measurement, because the numeric funnel is
 `not_applicable` for them and would otherwise leave them scored on the judge's
-verdict alone. Every factual claim receives an `evidence_grounding` tier:
+verdict alone. Every factual claim gets a `grounding_kind`, and these are the
+markers the page shows:
 
-- `primary`: cited to a structured tool result or a canonical fact;
-- `secondary`: cited only to another agent's findings, or to a prose blob such
-  as a report file the system itself wrote earlier in the run;
-- `unresolved`: every cited evidence ID is absent from the ledger;
-- `none`: nothing cited.
+| kind | marker | means |
+|---|---|---|
+| `factual` | ◆ | a route to operations on specific tables, *and* that route answers the question asked |
+| `report` | ◇ | curated report material that resolves in the ledger |
+| `none` | ○ | neither — the page prints the reason underneath |
 
-`qualitative_grounding_rate` is the share of non-numeric factual claims that
-resolve at any tier; `qualitative_primary_grounding_rate` is the strict share
-backed by an actual measurement. The scorecard shows the strict one.
+`factual_grounded_rate` and `report_grounded_rate` are the two shares;
+`grounded_rate` is their sum. Which one *should* be high depends on the
+question: series C asks for a summary of the report, so ◇ is the target
+there — but on a case with no curated report, analysing the live tables and
+saying so is the correct answer, and ◆ is right. What is always a defect is
+misattribution: presenting live analysis as the report's account, or citing a
+report that does not say it.
+
+Separately, `evidence_resolution` records whether the cited ids were found at
+all (`resolved`, `unresolved`, `none`), and restatements — claims repeating an
+earlier claim in the same answer — are counted once and not re-verified.
+
+### How rates are averaged
+
+Per-question judgements — accuracy and must-have coverage — are averaged **at
+each level**: a question's own rate over its repeats and cases first, then the
+mean of those rates over questions for a set, then over sets for the overview.
+Pooling instead would let a question asked about more cases count for more, and
+the aggregate denominator would read as questions while counting answers: with
+one oracle-bearing question the pooled figure showed `3/4`, which looks like
+three of four questions and is three of four answers to a single one. Aggregate
+levels label their denominator `(N questions)`; at a single question the level
+collapses and the answer counts are shown instead.
+
+Must-haves score **1, 0.5 or 0** per applicable point, with **no weights** —
+every point counts once — then average over repeats, questions and cases the
+same way. Rates are shown to the precision they have: `87.5%`, not `88%`.
+
+Everything else — claim counts, grounding shares, tool-call totals — pools over
+questions and repeats, because those are properties of answers rather than
+judgements about questions. Consistency is the exception in the other
+direction: it is computed *within* a case across that case's repeats, then
+averaged over cases, since two customers legitimately draw different
+specialists and different tables.
 
 One call is one ledger entry. The SSE `agent_completed` event and the trace row
 capture the same call, so entries are merged on `call_id`, provenance is
@@ -286,10 +359,27 @@ denominator, and aggregation are semantically appropriate. Missing trace
 instrumentation is `N/A`, not hallucination. Must-haves come only from the
 configured rubric; the LLM judge is not allowed to invent them.
 
-`content_evaluation.llm` uses an independent OpenAI-compatible JSON-mode client
-with pinned model, temperature, timeout, and retry settings. It does not import
-either AgenticSys checkout. The normal `OPENAI_API_KEY` environment variable is
-used unless `api_key_env`, `api_key`, or `base_url` is configured explicitly.
+`content_evaluation.llm` uses an independent JSON-mode client with pinned
+model, temperature, timeout, and retry settings. It does not import either
+AgenticSys checkout. The normal `OPENAI_API_KEY` environment variable is used
+unless `api_key_env`, `api_key`, or `base_url` is configured explicitly; see
+[the judge transports](#the-judge-transport) for the private environment's
+gateway.
+
+The cascade is three judge calls per answer, and the split between the last two
+is the one that matters:
+
+```
+extract      the question and the answer      -> claims
+evidence     claims + ledger + the run trace  -> pointers, routes, must-haves
+eligibility  routes + briefs + earlier turns  -> one verdict per claim
+```
+
+A judge that has already decided a claim is sound will describe a route that
+justifies it, so the route description is written before any verdict exists.
+The ledger is roughly 13k tokens and travels exactly once. A fourth call,
+`memory_leverage`, runs only when the turn was actually offered memory —
+asking it about an empty set would spend a call to learn nothing.
 
 ## Running a comparison
 
@@ -297,23 +387,24 @@ used unless `api_key_env`, `api_key`, or `base_url` is configured explicitly.
 the page — and every knob is a flag, so a sweep never needs a new config file.
 
 ```bash
-pip install -e .          # puts `agentic-eval` on PATH
-
-bin/compare --config experiments/configs/series_abc.yaml \
-  --question b2_tsr_cdss_reaction --question b4_abnormal_transactions \
+bin/compare --config experiments/configs/series_abcd.yaml \
+  --question b2_tsr_cdss_reaction --question b3_bureau_during_reaction \
   --repeats 1 --case-id 366132845011
 ```
 
 | flag | changes |
 |---|---|
 | `--scope` | a saved selection from `experiment.scopes`, e.g. `smoke` |
+| `--question-scope` | a saved question selection from `experiment.question_scopes` |
 | `--question` | which questions run; repeatable or comma-separated |
 | `--repeats` | k |
 | `--mode` | `cold` (reset each turn) or `stateful` (one session per repeat) |
 | `--case-id` | the case both systems analyse; repeat it to cover several |
 | `--cases-from` | read the case id list from a data directory; run them all |
+| `--workers` | how many sessions run at once (ceiling 8) |
 | `--baseline-cwd` / `--candidate-cwd` | which two checkouts are compared |
 | `--env-file` | where `OPENAI_API_KEY` is read from |
+| `--skip-run` + `--runs` | re-judge answers already on disk, starting no system |
 
 ### Smoke run
 
@@ -408,7 +499,7 @@ draw different specialists and different tables. The page gets a case selector
 above the repeat selector — together they pick which answers are on screen,
 while every metric stays totalled over all of them.
 
-### Question sets
+### A set is a conversation
 
 Each `questions_file` is a **set**, and a set is a conversation: in stateful
 mode it gets its own session, so questions in different sets never see each
@@ -431,6 +522,14 @@ parallelism is the **session** — one (case, set, repeat) — so the questions
 inside one still go in the configured order, on one server, and a follow-up
 still lands after the turn it refers to.
 
+**A worker owns whole cases, not an arbitrary slice of sessions.** Two workers
+on one case would collide even with separate servers, because the memory store
+is shared and `/rewind` purges it *by case id, across processes*: one worker
+opening a session would delete the memories the other is mid-way through
+writing. Owning the case end to end closes that window, and it is what makes
+a case's repeats strictly sequential — which is what makes them independent.
+With more workers than cases the extras stay idle, and the run says so.
+
 **Each worker starts its own server instance per system.** That is not a
 performance choice, it is required for correctness: the system under test keeps
 its data gateway and catalog as process-globals and re-scopes them to a case at
@@ -440,9 +539,10 @@ each other's tables. `server.py` documents the race itself:
 > turns on ONE case are serialized by `sess.turn_lock`, but two different
 > cases' turns can still interleave on these shared globals
 
-Worker *w* takes each system's configured port plus *w*, and shifts both
-`config.base_url` and `process.env.PORT` together — a mismatch is refused
-rather than silently health-checking against another worker's server. Space your
+Worker *w* takes each system's configured port plus *w*, and shifts
+`config.base_url`, `process.env.PORT`, the stdout log **and the trace DB**
+together — a mismatch is refused rather than silently health-checking against
+another worker's server, or reading another worker's traces. Space your
 systems' ports at least `workers` apart; a collision is caught before anything
 starts. The ceiling is 8, because N workers means N full servers per system.
 
@@ -456,10 +556,49 @@ Two consequences worth knowing:
   identity rather than drawn from one shared generator — so the same config and
   seed produce the same `runs.jsonl` whatever order the workers finish in.
 
+### Leaving the memory store as the run found it
+
+The system writes a `qa_turn` memory to a **real** store on every turn, and
+`/rewind` purges only the case it clears — so whatever the last session of each
+case wrote outlives the run, and is still there for the next one. Measured on
+one afternoon of small runs: thirteen memories left behind, from both systems,
+each readable by the other for the same case. A test that changes the
+environment it measures is not repeatable, and the residue is
+indistinguishable from real operating history.
+
+```yaml
+experiment:
+  memory_store:
+    url: "${AMEM_STORE_URL:-http://127.0.0.1:6333}"
+    collection: "${AMEM_COLLECTION_NAME:-amem_memories}"
+    restore_after_run: true
+```
+
+With this set, the runner snapshots every point — **payload and vector** —
+before anything starts, and restores exactly that afterwards: same ids, same
+payloads, same vectors. Re-inserting payloads alone would leave memories that
+exist but can never be retrieved, which is worse than deleting them, because
+the store then looks intact.
+
+A store that cannot be read is reported and **left alone**. "No snapshot" and
+"snapshot of nothing" must never look alike, or a failed read would authorise
+wiping everything. The run prints the count before and the footprint after:
+
+```
+  memory store: 0 memories before the run
+  memory store: removed 24 written by this run, reinstated 0; back to 0
+```
+
+Repeat independence is a separate mechanism — worker case ownership, above —
+because restoring at the end of a run says nothing about what one repeat can
+see of another during it.
+
 Case ids are the data directory names **exactly** as they appear on disk, and
 one of the real ones ends in a space. Quote it (`--case-id '11854808010 '`), or
 let `--cases-from` find it: the system under test keys on the raw folder name,
 so a stripped id matches no case and the run completes with every answer empty.
+
+### The interpreter the systems need
 
 The system under test needs an interpreter carrying its own dependencies. Point
 `AGENTIC_SYS_PYTHON` at it — the configs fall back to `python3`, which only
@@ -468,6 +607,8 @@ works if that already has them:
 ```bash
 export AGENTIC_SYS_PYTHON=~/.pyenv/versions/3.11.13/envs/autoAI/bin/python
 ```
+
+### The judge transport
 
 The judge is separate from the systems under test and has two transports:
 `openai` (default) and `safechain` for the private environment. Both present
@@ -502,24 +643,38 @@ either system starts, so a typo costs a second rather than a ten-minute run —
 ## What a run leaves behind
 
 ```
+manifest.json                   what was run: systems, mode, repeats, seed, and
+                                whether latency was measured concurrently
 runs.jsonl                      one record per answer: the answer, the team, the
                                 evidence ledger, tokens, latency, memory offered
 content/evaluations.jsonl       the same answers scored: claims, per-claim grounding
                                 and routes, must-haves, oracles, metrics
-content/answer_comparison.html  the page — answers side by side, atomic facts with
-                                their markers, metrics per question and overall
+content/answer_comparison.html  the page — metrics first, then answers side by side
+                                with their claims and markers
 content/walkthrough.md          the same as text: answer -> claims -> numbers
 content/comparison.md           one scorecard table, both systems, every question
 content/summary.json            aggregated metrics, for a script to read
-metrics/                        consistency, memory and latency, per question
+metrics/                        summary.json, comparison.json, comparison.md —
+                                consistency, memory and latency, per question
+review/                         blinded review packets and their separate keys
 logs/                           each system's server log
 ```
+
+`runs.jsonl` is the only irreplaceable artifact; everything else is derived
+from it and can be rebuilt. `rescore` recomputes `metrics/` and
+`evaluate-content` recomputes `content/`, both without touching the systems.
 
 The HTML page is built automatically at the end of `evaluate-content` — there is
 no separate step. `agentic-eval compare-answers --evaluations <file>` rebuilds it
 alone, which is what to use when only the rendering changed.
 
-Reading the page: **◆ factual** means the run recorded a route to operations on
+Reading the page: it opens on **Metrics** — the overview, then a section per
+question set, with each set's questions nested under it. **Answers & claims**
+carries the case and repeat selectors, which switch *which answers are shown*
+and nothing else: every metric stays totalled over all cases and repeats.
+
+Claim markers: **◆ factual** means the run recorded a route to operations on
 specific tables *and* that route answers the question asked; **◇ report** means
-the claim relays curated report material that resolves; **○** is neither. The
-repeat tabs switch the answers only — the metrics are totalled over every repeat.
+the claim relays curated report material that resolves; **○** is neither, and
+the red line beneath it says why, with the detail on hover. A row with no
+marker is a restatement — counted once, not re-verified, and hidden by default.

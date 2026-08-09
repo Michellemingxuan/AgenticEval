@@ -2,8 +2,8 @@
 # One comparison, end to end: run both systems, score the answers, build the
 # side-by-side page. Every knob is a flag, so a sweep never needs a new config.
 #
-#   bin/compare --config experiments/configs/series_abc.yaml \
-#               --question b2_tsr_cdss_reaction --question b4_abnormal_transactions \
+#   bin/compare --config experiments/configs/series_abcd.yaml \
+#               --question b2_tsr_cdss_reaction --question b3_bureau_during_reaction \
 #               --repeats 1 --case-id 366132845011
 #
 # Several cases in one run — every question is asked about every case, and the
@@ -33,20 +33,30 @@
 #   bin/compare --config experiments/configs/series_abcd.yaml \
 #               --question-scope series_b
 #
+# Re-judge answers already on disk, starting no system at all:
+#
+#   bin/compare --config experiments/configs/series_abcd.yaml --skip-run \
+#               --runs experiments/results/<run>/runs.jsonl
+#
 # Anything not passed falls back to the config. `--question` and `--case-id`
 # may repeat; an unknown question fails before either system starts, as does a
 # follow-up selected without the turn it refers to.
 set -euo pipefail
 
 CONFIG="" ; ARGS=() ; ENV_FILE="${AGENTIC_EVAL_ENV:-../AgenticSys_v2/.env}"
+SKIP_RUN=0 ; RUNS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)      CONFIG="$2"; ARGS+=(--config "$2"); shift 2 ;;
     --env-file)    ENV_FILE="$2"; shift 2 ;;
+    --runs)        RUNS="$2"; shift 2 ;;
     --question|--scope|--question-scope|--case-id|--cases-from|--repeats|--workers|--mode|--baseline-cwd|--candidate-cwd)
                    ARGS+=("$1" "$2"); shift 2 ;;
     --skip-run)    SKIP_RUN=1; shift ;;
-    -h|--help)     sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header block, however long it grows: everything from line 2
+    # up to the first non-comment line. A pinned range silently truncates the
+    # help the moment a paragraph is added above it.
+    -h|--help)     sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *)             echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -70,8 +80,19 @@ for name, qs in sets.items():
 for case in cases:
     print("     case %s" % (repr(case) if case != case.strip() else case))'
 
-echo "== run"
-OUT=$(agentic-eval run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
+if (( SKIP_RUN )); then
+  # Re-judge answers already on disk. The flag used to be parsed and then
+  # ignored, so `--skip-run` started both systems and ran the whole thing —
+  # the one outcome it exists to prevent.
+  [[ -n "$RUNS" ]] || {
+    echo "--skip-run needs --runs <path to runs.jsonl>" >&2; exit 2; }
+  [[ -f "$RUNS" ]] || { echo "no such runs file: $RUNS" >&2; exit 2; }
+  OUT=$(cd "$(dirname "$RUNS")" && pwd)
+  echo "== skip run; scoring the answers already in $OUT"
+else
+  echo "== run"
+  OUT=$(agentic-eval run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
+fi
 
 echo "== score answers"
 agentic-eval evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT" | tail -1
