@@ -45,6 +45,24 @@ set -euo pipefail
 
 CONFIG="" ; ARGS=() ; ENV_FILE="${AGENTIC_EVAL_ENV:-../AgenticSys_v2/.env}"
 SKIP_RUN=0 ; RUNS=""
+
+# Prefer the installed console script; fall back to running the package out of
+# this checkout. `pip install -e .` is one step to forget, and the failure was
+# a bare "agentic-eval: command not found" that says nothing about which of the
+# two Pythons it went missing from. The repo root comes from this script's own
+# location, so the fallback works from any cwd.
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if command -v agentic-eval >/dev/null 2>&1; then
+  EVAL=(agentic-eval)
+else
+  EVAL=("${AGENTIC_EVAL_PYTHON:-python3}" -m agentic_eval)
+  export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+  "${EVAL[@]}" --help >/dev/null 2>&1 || {
+    echo "cannot run agentic-eval: neither the console script nor" >&2
+    echo "  ${AGENTIC_EVAL_PYTHON:-python3} -m agentic_eval (from $REPO) works." >&2
+    echo "  Try: ${AGENTIC_EVAL_PYTHON:-python3} -m pip install -e $REPO" >&2
+    exit 2; }
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)      CONFIG="$2"; ARGS+=(--config "$2"); shift 2 ;;
@@ -69,7 +87,7 @@ if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
 echo "== plan"
 # One validate call feeds both the plan and the key check. It needs no
 # credentials, so it can run before them.
-PLAN=$(agentic-eval validate "${ARGS[@]}")
+PLAN=$("${EVAL[@]}" validate "${ARGS[@]}")
 printf '%s' "$PLAN" | python3 -c '
 import json,sys; d=json.load(sys.stdin)
 cases = d.get("cases") or []
@@ -105,11 +123,11 @@ if (( SKIP_RUN )); then
   echo "== skip run; scoring the answers already in $OUT"
 else
   echo "== run"
-  OUT=$(agentic-eval run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
+  OUT=$("${EVAL[@]}" run "${ARGS[@]}" | tee /dev/stderr | tail -1 | sed 's/^Comparison complete: //')
 fi
 
 echo "== score answers"
-agentic-eval evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT" | tail -1
+"${EVAL[@]}" evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT" | tail -1
 
 cat <<EOF
 
