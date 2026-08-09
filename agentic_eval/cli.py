@@ -552,6 +552,10 @@ def main() -> None:
                 "enabled": config.content_evaluation["enabled"],
                 "auto_run": config.content_evaluation["auto_run"],
                 "model": config.content_evaluation["llm"]["model"],
+                # Which transport the judge will actually use, after
+                # LLM_BACKEND is applied. Worth a line of output: the wrong
+                # one is invisible until a judge call leaves the machine.
+                "backend": config.content_evaluation["llm"]["backend"],
             },
             "memory_evaluation": {
                 "annotated_questions": [

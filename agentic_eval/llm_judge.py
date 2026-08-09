@@ -186,8 +186,12 @@ class OpenAIJudgeClient:
         self.model = str(self.config.get("model") or "gpt-4.1")
         self.temperature = float(self.config.get("temperature", 0))
         self.timeout_s = float(self.config.get("timeout_s", 180))
+        # Same precedence as `config._content_config`: the environment names
+        # the transport, because the transport is a fact about where the run
+        # is happening. This path matters on its own — a client built from a
+        # hand-made dict never passes through config loading.
         self.backend = str(
-            self.config.get("backend") or os.environ.get("LLM_BACKEND", "openai")
+            os.environ.get("LLM_BACKEND") or self.config.get("backend") or "openai"
         )
         self._client = build_client(self.config, self.backend, self.timeout_s)
 

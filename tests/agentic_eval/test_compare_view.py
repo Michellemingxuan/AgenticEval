@@ -125,7 +125,10 @@ def test_write_answer_comparison_is_self_contained(tmp_path):
     page = path.read_text(encoding="utf-8")
     assert path.name == "answer_comparison.html"
     # No network dependency: the viewer must open from disk with no server.
-    assert "http://" not in page and "https://" not in page
+    # The SVG namespace is a name, not an address — nothing fetches it, and a
+    # data-URI icon will not render without it. Everything else must be local.
+    fetchable = page.replace("http://www.w3.org/2000/svg", "")
+    assert "http://" not in fetchable and "https://" not in fetchable
     assert "<script>" in page  # the tab switcher is inline
 
 

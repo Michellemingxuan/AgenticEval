@@ -1303,7 +1303,10 @@ def write_answer_comparison(
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Answer comparison</title>
+<title>AgenticEval</title>
+<!-- Same mark as the header, drawn heavier: at a 16px tab the finer version
+     closes up into a lump. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%2300175a'/%3E%3Cpath%20d='M14.6,8L8,16L14.6,24Z'%20fill='%23fff'/%3E%3Cpath%20d='M17.4,8L24,16L17.4,24'%20fill='none'%20stroke='%234c9ae8'%20stroke-width='3'%20stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root {
   --ink: #1a1a1a; --muted: #6b7280; --faint: #9ca3af;
@@ -1316,7 +1319,18 @@ _PAGE = """<!doctype html>
 html, body { margin: 0; padding: 0; }
 body { font: 14px/1.45 var(--ui); color: var(--ink); background: #fff; }
 header { padding: 22px 24px 0; }
-header h1 { margin: 0 0 3px; font-size: 19px; font-weight: 600; }
+/* The mark is the page's own vocabulary: a solid diamond beside a hollow one,
+   the ◆/◇ grounding markers, and two systems set side by side. */
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.brand svg { display: block; width: 30px; height: 30px; flex: none; }
+header h1 {
+  margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em;
+  color: #00175a;
+}
+header .tag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--faint); margin-top: 1px;
+}
 header .sub { color: var(--muted); font-size: 12.5px; }
 code {
   font-family: var(--mono); font-size: 11.5px; background: var(--wash2);
@@ -1483,7 +1497,18 @@ table.facts td { overflow-wrap: anywhere; }
      and ships control bytes into the stylesheet. */
 </style></head><body class="hide-restated">
 <header>
-  <h1>Answer comparison</h1>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" role="img" aria-label="AgenticEval">
+      <rect width="32" height="32" rx="6" fill="#00175a"/>
+      <path d="M15.2,7.5L8.5,16L15.2,24.5Z" fill="#fff"/>
+      <path d="M16.8,7.5L23.5,16L16.8,24.5" fill="none" stroke="#4c9ae8"
+            stroke-width="2.2" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>AgenticEval</h1>
+      <div class="tag">Answer comparison</div>
+    </div>
+  </div>
   <div class="sub">{{SUBTITLE}}</div>
 </header>
 <div class="toolbar">

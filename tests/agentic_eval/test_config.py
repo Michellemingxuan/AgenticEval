@@ -370,6 +370,74 @@ def test_an_absent_safechain_says_which_environment_it_needs():
         client.chat.completions.create(model="gpt-4.1", messages=[])
 
 
+def _config_pinning_openai(tmp_path: Path) -> Path:
+    questions = tmp_path / "questions.json"
+    questions.write_text(
+        '{"test_cases":[{"name":"q1","question":"Question?"}]}', encoding="utf-8",
+    )
+    cfg = tmp_path / "compare.yaml"
+    cfg.write_text(
+        """
+version: 1
+experiment:
+  baseline: old
+  candidate: new
+  output_dir: ./out
+questions_file: ./questions.json
+content_evaluation:
+  enabled: true
+  llm:
+    backend: openai
+    model: gpt-4.1
+systems:
+  old: {adapter: agenticsys_sse, config: {base_url: 'http://127.0.0.1:1'}}
+  new: {adapter: agenticsys_sse, config: {base_url: 'http://127.0.0.1:2'}}
+""",
+        encoding="utf-8",
+    )
+    return cfg
+
+
+def test_llm_backend_env_overrides_a_config_that_pins_openai(tmp_path, monkeypatch):
+    """The env names the transport; the file cannot outvote it.
+
+    Every shipped config pins `backend: openai`, and the private environment
+    runs the same checkout. Under the old `setdefault`, LLM_BACKEND could never
+    take effect — so a run there would build an OpenAI client and send judging
+    traffic off the gateway, with nothing in the output saying so.
+    """
+    cfg = _config_pinning_openai(tmp_path)
+    monkeypatch.setenv("LLM_BACKEND", "safechain")
+    assert load_config(cfg).content_evaluation["llm"]["backend"] == "safechain"
+
+    monkeypatch.delenv("LLM_BACKEND")
+    assert load_config(cfg).content_evaluation["llm"]["backend"] == "openai"
+
+
+def test_the_judge_client_honours_the_env_over_its_own_config(monkeypatch):
+    """A client built from a hand-made dict never passes through config loading."""
+    from agentic_eval.llm_judge import OpenAIJudgeClient
+    monkeypatch.setenv("LLM_BACKEND", "safechain")
+    client = OpenAIJudgeClient({"backend": "openai", "model": "gpt-4.1"})
+    assert client.backend == "safechain"
+    assert type(client._client).__name__ == "SafeChainClient"
+
+
+def test_validate_reports_the_transport_the_judge_will_use(tmp_path, monkeypatch):
+    """Preflight has to be able to answer 'which endpoint will this call?'."""
+    import json
+    import sys
+    from agentic_eval.cli import main
+    cfg = _config_pinning_openai(tmp_path)
+    monkeypatch.setenv("LLM_BACKEND", "safechain")
+    monkeypatch.setattr(sys, "argv", ["agentic-eval", "validate", "--config", str(cfg)])
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(str(a[0])))
+    main()
+    report = json.loads(printed[0])
+    assert report["content_evaluation"]["backend"] == "safechain"
+
+
 def test_an_unknown_backend_is_rejected_by_name():
     import pytest
     from agentic_eval.llm_judge import build_client

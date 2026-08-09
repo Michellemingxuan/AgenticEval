@@ -122,7 +122,15 @@ def _content_config(data: dict[str, Any], base: Path) -> dict[str, Any]:
     content["oracle_cwd"] = _resolve_path(base, str(content.get("oracle_cwd") or "."))
     content["oracle_timeout_s"] = float(content.get("oracle_timeout_s", 60))
     llm = dict(content.get("llm") or {})
-    llm.setdefault("backend", "openai")
+    # LLM_BACKEND WINS over the file, unlike every other setting here. One
+    # checkout runs in two environments and only one of them has the gateway,
+    # so the transport is a property of where the run happens, not of the
+    # config. `setdefault` had it backwards: every shipped config pins
+    # `backend: openai`, so the env var could never take effect and a private
+    # run would quietly send its judging traffic to OpenAI.
+    llm["backend"] = (
+        os.environ.get("LLM_BACKEND") or llm.get("backend") or "openai"
+    )
     llm.setdefault("model", "gpt-4.1")
     llm.setdefault("temperature", 0)
     llm.setdefault("max_retries", 8)

@@ -8,6 +8,15 @@ dependencies = [
   "PyYAML>=6.0,<7.0",
 ]
 
+[project.optional-dependencies]
+# The private environment's judge transport. `safechain` and `langchain-core`
+# come from that environment's own index and are deliberately NOT named here —
+# declaring them would make this package uninstallable everywhere else.
+# `nest-asyncio` is the one piece available on PyPI: SafeChain's token helper
+# bridges sync->async with its own `asyncio.run`, which raises inside the loop
+# this client opens per call.
+safechain = ["nest-asyncio>=1.6,<2.0"]
+
 [project.scripts]
 agentic-eval = "agentic_eval.cli:main"
 

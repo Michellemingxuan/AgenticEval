@@ -477,6 +477,24 @@ the judging code are identical either way — set
 constructed by AgenticEval rather than borrowed from the system being
 evaluated: a judge is not independent if a change to its subject can change it.
 
+**`LLM_BACKEND` overrides the config file** — the only setting that does. The
+transport is a fact about *where the run happens*, and the same checkout runs
+in both places; every shipped config pins `backend: openai` because that is
+what dev has. Confirm which one a run will use before spending a judge pass:
+
+```bash
+LLM_BACKEND=safechain agentic-eval validate --config experiments/configs/series_abcd.yaml \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['content_evaluation'])"
+# {'enabled': True, 'auto_run': False, 'model': 'gpt-4.1', 'backend': 'safechain'}
+```
+
+The gateway also needs `nest-asyncio` (`pip install -e '.[safechain]'`), plus
+`safechain` and `langchain-core` from the private index — those two are not
+declared as dependencies, since naming them would make the package
+uninstallable anywhere else. `SAFECHAIN_MODEL` overrides the model id if the
+gateway names it differently. If the compliance template cannot be imported
+the judge refuses to run rather than invoking the model bare.
+
 Anything not passed falls back to the config. Names are validated *before*
 either system starts, so a typo costs a second rather than a ten-minute run —
 `agentic-eval validate --config <cfg> --question <name>` prints the plan alone.
