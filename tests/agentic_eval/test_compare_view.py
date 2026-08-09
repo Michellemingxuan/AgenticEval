@@ -916,36 +916,47 @@ def _ordered_rows():
     ]
 
 
-def test_questions_order_by_set_then_position_within_it():
-    """`sequence_position` restarts at 1 in every set — each is its own
-    conversation — so ordering by it alone grouped every set's OPENING question
-    together and pushed the follow-ups to the end.
+def test_questions_order_by_set_name_then_position():
+    """Sets in name order, questions in the order asked within each.
+
+    `sequence_position` restarts at 1 in every set, so ordering by it alone
+    grouped every set's OPENING question together and pushed the follow-ups to
+    the end. Set order is the NAME, not first appearance in the file: a subset
+    re-judge rewrites the file in pieces, and the page then read b, a, c.
     """
     page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
     ordered = re.findall(
         r'<section class="question" id="q\d+"[^>]*>\s*<h3>([^<]+)</h3>', page,
     )
-    assert ordered == ["b2", "b3", "a1", "a2"]
+    assert ordered == ["a1", "a2", "b2", "b3"]
 
 
-def test_set_order_follows_the_records_not_the_alphabet():
-    """Records are written session by session, so first appearance is config
-    order. Alphabetical would disagree with the question sections above the
-    moment a set is named anything outside a sortable pattern."""
+def test_set_order_is_the_name_not_the_file_order():
+    """The fixture lists series_b first on purpose.
+
+    Order a reader can predict beats order that depends on which questions
+    happened to be re-scored last.
+    """
     page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
-    assert page.index('id="set-series_b"') < page.index('id="set-series_a"')
+    assert page.index('id="set-series_a"') < page.index('id="set-series_b"')
     nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
     assert re.findall(r'class="tname">([^<]+)<', nav) == [
-        "overview", "series_b", "b2", "b3", "series_a", "a1", "a2",
+        "overview", "series_a", "a1", "a2", "series_b", "b2", "b3",
     ]
+
+
+def test_natural_order_puts_ten_after_two():
+    from agentic_eval.render.page import _natural_key
+
+    assert sorted(["a10", "a2", "a1"], key=_natural_key) == ["a1", "a2", "a10"]
 
 
 def test_the_anchors_of_one_set_are_contiguous():
     """b3 must follow b2, not land after another set's question."""
     page = answer_comparison_html(_ordered_rows(), baseline="old", candidate="new")
     nav = page.split('<div data-only-tab="metrics">', 1)[1].split("</div>", 1)[0]
-    b_sub = nav.split("series_b", 1)[1].split("series_a", 1)[0]
-    assert re.findall(r'href="#(q\d+)"', b_sub) == ["q0", "q1"]
+    b_sub = nav.split("series_b", 1)[1]
+    assert re.findall(r'href="#(q\d+)"', b_sub) == ["q2", "q3"]
 
 
 def _ungrounded(**fields):
@@ -995,7 +1006,7 @@ def test_the_reason_names_the_figure_that_failed():
          "the stated relation is not confirmed by the evidence"),
         (dict(eligible="yes", route=[]), "no recorded operation behind it"),
         (dict(eligible="unavailable", route=[{"s": 1}]),
-         "no recorded operation to rule on"),
+         "no operation recorded, so relevance could not be judged"),
     ]
     for fields, expected in cases:
         page = answer_comparison_html(
@@ -1071,3 +1082,84 @@ def test_a_yes_no_row_renders_as_words_with_no_delta():
     assert _fmt_value(None, "bool") == "—"
     # Both systems answer the same question set, so a delta is meaningless.
     assert _delta_cell(True, False, True, "bool") == '<td class="delta"></td>' 
+
+
+def _scored(system, name, run_index, *, correct, checked, case_id="c1"):
+    row = _evaluation(system, name, run_index, "A", metrics={
+        "answer_correct": correct, "answer_checked": checked,
+    })
+    row["case_id"] = case_id
+    return row
+
+
+def test_a_per_question_judgement_is_averaged_over_questions_not_answers():
+    """"3/4" at the overview reads as three of four QUESTIONS.
+
+    It was three of four answers to the only question that had an oracle. A
+    question asked about more cases or more repeats must not count for more,
+    so each question's own rate is taken first and those are averaged.
+    """
+    rows = [
+        # q1: 4 answers, all correct. q2: 2 answers, both wrong.
+        *[_scored("old", "q1", i, correct=1, checked=1) for i in (1, 2)],
+        *[_scored("old", "q1", i, correct=1, checked=1, case_id="c2") for i in (1, 2)],
+        *[_scored("old", "q2", i, correct=0, checked=1) for i in (1, 2)],
+        *[_scored("new", "q1", i, correct=1, checked=1) for i in (1, 2)],
+        *[_scored("new", "q1", i, correct=1, checked=1, case_id="c2") for i in (1, 2)],
+        *[_scored("new", "q2", i, correct=0, checked=1) for i in (1, 2)],
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    overview = page.split('id="overview"', 1)[1].split("</section>", 1)[0]
+    accuracy = re.search(
+        r'<tr><td>Accuracy</td><td class="num">([^<]*)</td>', overview,
+    ).group(1)
+    # Pooled over answers this is 4/6 = 67%. Averaged over questions it is
+    # (100% + 0%) / 2 = 50%, and q1's extra case does not buy it weight.
+    assert accuracy == "50% (2 questions)"
+
+
+def test_a_question_shows_its_rate_with_no_counts():
+    """At a question the value IS the mean over its answers.
+
+    "50% (2/4)" invited reading the pair as a fraction of must-haves rather
+    than of answers, and it is the same kind of number as the 96.9% beside it.
+    Only the aggregate levels name what they averaged over.
+    """
+    rows = [
+        *[_scored("old", "q1", i, correct=1, checked=1) for i in (1, 2)],
+        *[_scored("new", "q1", i, correct=0, checked=1) for i in (1, 2)],
+    ]
+    page = answer_comparison_html(rows, baseline="old", candidate="new")
+    section = page.split('id="q0"', 1)[1].split("</section>", 1)[0]
+    assert '<tr><td>Accuracy</td><td class="num">100%</td>' in section
+    assert "(2/2)" not in section
+    # The overview over the same single question names the question count.
+    overview = page.split('id="overview"', 1)[1].split("</section>", 1)[0]
+    assert "1 question)" in overview
+
+
+def test_a_contradicted_oracle_says_what_the_answer_claimed():
+    """"not in answer" read as if the answer had been silent.
+
+    On the case with one payment return, every answer asserted there were
+    none — a contradiction, not an omission, and the worse of the two.
+    """
+    from agentic_eval.render.page import _oracle_found
+
+    assert _oracle_found({
+        "verdict": "fail", "matched_value": None, "expected": True,
+        "reason": "Ground truth is True; the answer states False (matched: x).",
+    }) == '<span class="bad-val">False</span> <span class="loc">stated</span>'
+
+
+def test_a_missing_figure_says_which_kind_of_absence():
+    from agentic_eval.render.page import _oracle_found
+
+    assert "no such figure" in _oracle_found({
+        "verdict": "fail", "matched_value": None, "expected": 1,
+        "reason": "No material number in the answer equals 1.0 (tolerance 0.0).",
+    })
+    # Genuinely silent stays "not in answer".
+    assert "not in answer" in _oracle_found({
+        "verdict": "fail", "matched_value": None, "expected": 5, "reason": "",
+    })

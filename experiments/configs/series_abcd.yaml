@@ -21,6 +21,19 @@ experiment:
   seed: 20260802
   output_dir: ../results
 
+  # The system writes a `qa_turn` memory per turn to a REAL store, and
+  # `/rewind` purges only the case it clears — so whatever the last session of
+  # each case wrote outlives the run. Snapshot before, restore after, and the
+  # store ends holding exactly what it held: same ids, payloads and vectors.
+  #
+  # Repeat independence is handled separately, in the runner: one worker owns
+  # a whole case, so rewind clears that case at every session start with no
+  # concurrent writer racing it.
+  memory_store:
+    url: "${AMEM_STORE_URL:-http://127.0.0.1:6333}"
+    collection: "${AMEM_COLLECTION_NAME:-amem_memories}"
+    restore_after_run: true
+
   # RUN scopes pin the whole shape of a run — questions, k, cases, workers.
   # `--scope smoke` is one word instead of a line of flags remembered
   # correctly. Explicit flags still win over whatever a scope sets.

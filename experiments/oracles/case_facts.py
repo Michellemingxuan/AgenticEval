@@ -47,8 +47,53 @@ def _number(value: str) -> float:
     return float(str(value).replace(",", "").replace("$", "").strip() or 0)
 
 
+def _table(case: Path, *names: str) -> Path:
+    """The first of these filenames that this case actually has.
+
+    Filenames are NOT uniform across cases: one ships `crossbu_cards.csv`, the
+    other `crossbu_data_cards.csv`. An oracle that hard-codes one name works on
+    the case it was written against and raises on the next — and a raising
+    oracle is worse than a missing one, because the run keeps going and the
+    metric quietly describes whichever case still parses.
+    """
+    for name in names:
+        candidate = case / name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"case {case.name!r} has none of: {', '.join(names)}"
+    )
+
+
+def _payment_rows(case: Path) -> list[dict[str, str]]:
+    """Every payment for the case, whichever layout it is stored in.
+
+    Two layouts exist in the real data. One case ships a single merged
+    `payments_data.csv`; the other ships `payments_success.csv` beside
+    `payments_returns_data.csv`, and the system's own gateway rbinds those two
+    into one `payments` table. The oracle has to read the case as the system
+    does, or it answers about a table the system never saw — here it simply
+    crashed on the split layout, which is why the rubric was silently grading
+    every answer against the other case.
+    """
+    merged = case / "payments_data.csv"
+    if merged.exists():
+        return _rows(merged)
+    rows: list[dict[str, str]] = []
+    for name in ("payments_success.csv", "payments_returns_data.csv"):
+        path = case / name
+        if path.exists():
+            rows.extend(_rows(path))
+    if not rows:
+        raise FileNotFoundError(
+            f"no payments table for {case.name!r}: expected payments_data.csv, "
+            "or payments_success.csv beside payments_returns_data.csv"
+        )
+    return rows
+
+
 def has_payment_returns(case: Path) -> dict:
-    rows = _rows(case / "payments_data.csv")
+    rows = _payment_rows(case)
     returned = [
         row for row in rows
         if str(row.get("Return Flag", "")).strip() not in {"", "0"}
@@ -74,7 +119,7 @@ def payment_return_count(case: Path) -> dict:
 
 
 def _cards(case: Path) -> list[dict[str, str]]:
-    return _rows(case / "crossbu_cards.csv")
+    return _rows(_table(case, "crossbu_cards.csv", "crossbu_data_cards.csv"))
 
 
 def commercial_card_count(case: Path) -> dict:

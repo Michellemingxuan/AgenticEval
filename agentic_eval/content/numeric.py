@@ -242,8 +242,13 @@ def comparison_variants(
     text = str(written or "")
     variants = []
     if "%" in text:
+        # `_written_tolerance` already returns "32%" on the FRACTION scale
+        # (0.005). So converting the expected value down to a fraction leaves
+        # the tolerance alone, and converting it up to a percentage multiplies
+        # it. Dividing it as well made the window 0.00005 and reported 32%
+        # against 0.317 — a 0.3pp difference — as a disagreement.
         variants.append((expected * 100.0, computed, tolerance * 100.0))
-        variants.append((expected / 100.0, computed, tolerance / 100.0))
+        variants.append((expected / 100.0, computed, tolerance))
     # Magnitudes are comparable unless the answer stated a direction that the
     # evidence contradicts. "declined by 2.2%" against -0.022 is notation; "+5%"
     # against -0.05 is the answer getting the direction wrong, which is exactly
@@ -282,6 +287,30 @@ _PERIOD_FORMS = re.compile(
 )
 
 
+#: A figure the ANSWER supplies as background rather than reads from evidence:
+#: "exceeding the risky threshold of 20". The tool output contains measurements,
+#: not the thresholds they are judged against, so the numeric trace can never
+#: locate one — and reported that as the answer inventing a number.
+#:
+#: A stated threshold can still be WRONG, but this is not the instrument that
+#: can tell: unknown, never charged.
+_CONSTANT_WORDS = (
+    "threshold", "benchmark", "cutoff", "cut-off", "target", "limit",
+    "tolerance", "criterion", "policy", "band",
+)
+
+
+def is_stated_constant(measures: Any) -> bool:
+    """Is this a constant the answer brought, rather than a measurement?
+
+    Judged from the judge's own `measures` description, which is where the
+    role of the figure is recorded — "risky threshold for TSR" is a threshold
+    whatever its digits look like.
+    """
+    described = str(measures or "").lower()
+    return any(word in described for word in _CONSTANT_WORDS)
+
+
 def is_period_expression(written: Any, measures: Any = None) -> bool:
     """Does this mention name a period rather than a quantity?
 
@@ -292,6 +321,12 @@ def is_period_expression(written: Any, measures: Any = None) -> bool:
     """
     if _PERIOD_FORMS.match(str(written or "")):
         return True
+    # The description alone is too eager: "19" measured as "period of spending"
+    # is a COUNT of months, not a date. Require the written form to look at
+    # least date-ish before trusting the prose.
     described = str(measures or "").strip().lower()
-    return described.startswith(("period ", "period of", "month ", "months ",
-                                 "timeframe", "time period", "date range"))
+    looks_datey = bool(re.search(r"\d{4}|q[1-4]\b|" + _MONTHS, str(written or ""), re.I))
+    return looks_datey and described.startswith(
+        ("period ", "period of", "month ", "months ", "timeframe",
+         "time period", "date range")
+    )

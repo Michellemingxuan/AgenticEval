@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,17 @@ from agentic_eval.cases import describe_case
 from agentic_eval.common.coerce import _slug
 from agentic_eval.layout import RunLayout
 from agentic_eval.render.markers import GROUNDING_MARKER as _GROUNDING_MARKER
+
+def _natural_key(text: str) -> tuple:
+    """Sort `a2` before `a10`, and `series_a` before `series_b`.
+
+    Digit runs compare as numbers so question 10 does not land between 1 and 2.
+    """
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part)
+        for part in re.split(r"(\d+)", str(text)) if part
+    )
+
 
 def _dig(source: dict[str, Any], key: str) -> Any:
     """Read a possibly dotted key, e.g. `latency_seconds.mean`."""
@@ -65,12 +77,12 @@ def _dig(source: dict[str, Any], key: str) -> Any:
 #:            against each other by construction, so a signed change on each
 #:            reads as two findings when there is one
 _CONTENT_METRICS = (
-    ("answer_correct", "answer_checked", "Accuracy", True, "rate"),
+    ("answer_correct", "answer_checked", "Accuracy", True, "macro"),
     ("orthogonal_claim_count", "all_factual_claim_count", "Orthogonal claims", True, "count"),
     ("grounded_count", "orthogonal_claim_count", "Grounded", True, "rate"),
     ("factual_grounded_count", "orthogonal_claim_count", "· factual grounded", True, "part"),
     ("report_grounded_count", "orthogonal_claim_count", "· report grounded", True, "part"),
-    ("must_have_coverage", "must_have_questions", "Must-have hit rate", True, "rate"),
+    ("must_have_coverage", "must_have_questions", "Must-have hit rate", True, "macro"),
 )
 
 # Memory leverage was here and is gone. Its denominator counted memory SOURCES
@@ -242,7 +254,15 @@ _FIGURE_FAILURES = {
     "ambiguous_scalar": "matches more than one value",
     "imprecise_path": "points at the wrong part of the evidence",
     "unmapped_but_present": "appears in the evidence, but not at the place the claim points to",
-    "secondary_source": "cited a summary rather than the measurement",
+    # The figure appears ONLY in a specialist's write-up — no tool output in
+    # the run contains it. That is not a citation-hygiene nit: it is the state
+    # a fabricated number lands in. On the case with no curated report,
+    # `previous` asserted "a large outlier transaction of $18,749 in automotive
+    # equipment ... in Sep '23"; the spends table holds no amount between
+    # 18,000 and 19,500 in any month, and the only automotive row in the case
+    # is $31.09. Say plainly that nothing measured it.
+    "secondary_source":
+        "found only in a specialist's summary — no measurement behind it",
 }
 
 
@@ -301,7 +321,7 @@ def _ungrounded_reason(fact: dict[str, Any]) -> tuple[str, str]:
         return "no recorded operation behind it", str(fact.get("reason") or "")
     if fact.get("eligible") == "unavailable":
         return (
-            "no recorded operation to rule on",
+            "no operation recorded, so relevance could not be judged",
             str(fact.get("eligibility_reason") or fact.get("reason") or ""),
         )
     return "did not ground", str(fact.get("reason") or "")
@@ -425,6 +445,18 @@ def _oracle_found(row: dict[str, Any]) -> str:
             f'{html.escape(str(row.get("expected")))} '
             '<span class="loc">stated</span>'
         )
+    # A failing boolean DID state something — the opposite. "not in answer"
+    # read as if the answer had been silent, when it had contradicted the
+    # ground truth outright, which is a different and worse result.
+    reason = str(row.get("reason") or "")
+    contradicted = re.search(r"the answer states (\w+)", reason)
+    if contradicted:
+        return (
+            f'<span class="bad-val">{html.escape(contradicted.group(1))}</span> '
+            '<span class="loc">stated</span>'
+        )
+    if "No material number in the answer equals" in reason:
+        return '<span class="missing">no such figure in the answer</span>'
     return '<span class="missing">not in answer</span>'
 
 
@@ -483,9 +515,35 @@ def _totals(evaluations: list[dict[str, Any]], key: str) -> float | None:
     return sum(values) if values else None
 
 
+def _macro_rate(
+    runs: list[dict[str, Any]], numerator_key: str, denominator_key: str,
+) -> tuple[float | None, int]:
+    """Each question's own rate, then the mean of those — and how many.
+
+    A per-QUESTION judgement must not be pooled over answers, or a question
+    asked about more cases or more repeats counts for more. With one
+    oracle-bearing question the pooled figure read "3/4", which looks like
+    three of four questions and is three of four ANSWERS to a single one.
+
+    At one question the level collapses and the answer counts are what a
+    reader wants, so the caller shows those instead.
+    """
+    per_question: dict[str, list[float]] = {}
+    for row in runs:
+        metrics = row.get("metrics") or {}
+        numerator, denominator = metrics.get(numerator_key), metrics.get(denominator_key)
+        if numerator is None or denominator is None:
+            continue
+        totals = per_question.setdefault(str(row.get("name")), [0.0, 0.0])
+        totals[0] += float(numerator)
+        totals[1] += float(denominator)
+    rates = [n / d for n, d in per_question.values() if d]
+    return (_mean(rates), len(rates)) if rates else (None, 0)
+
+
 def _content_rows(
     base_runs: list[dict[str, Any]], cand_runs: list[dict[str, Any]],
-    spec=_CONTENT_METRICS,
+    spec=_CONTENT_METRICS, aggregate: bool = False,
 ) -> list[str]:
     """One row per content metric, as summed numerator over denominator."""
     rows = []
@@ -499,7 +557,35 @@ def _content_rows(
                 values.append(None)
                 continue
             shown_n = _fmt_value(numerator, "count")
-            if style == "count":
+            if style == "macro":
+                # Averaged over questions, each averaged over its cases and
+                # repeats — so the level the row is shown at is the level it
+                # is computed at.
+                rate, n_questions = _macro_rate(runs, numerator_key, denominator_key)
+                if rate is None:
+                    cells.append("—")
+                    values.append(None)
+                    continue
+                values.append(rate)
+                # Over a set or the whole run the denominator is QUESTIONS —
+                # "3/4" there reads as three of four questions when it is
+                # three of four answers to the only one that had an oracle.
+                # At a single question the answer counts are what is wanted.
+                # Half-credit means these land on halves, and rounding 87.5
+                # to 88 hides which. Trailing ".0" is dropped so a whole
+                # number still reads as one.
+                percent = f"{100 * rate:.1f}".rstrip("0").rstrip(".")
+                # At a question the value IS the mean over its answers, so
+                # the counts add nothing: "50% (2/4)" and "96.9%" are the same
+                # kind of number and reading one as a fraction of must-haves
+                # was the confusion. Only the aggregate levels name what they
+                # averaged over.
+                shown = (
+                    f" ({n_questions} question"
+                    f"{'' if n_questions == 1 else 's'})" if aggregate else ""
+                )
+                cells.append(f"{percent}%{shown}")
+            elif style == "count":
                 # A claim count is compared as a count: "+55 claims" is the
                 # finding, and a percentage of a moving denominator hides it.
                 values.append(numerator)
@@ -664,6 +750,7 @@ def _summary_block(
     measured = False
     content_rows = _content_rows(
         runs_by_system.get(baseline) or [], runs_by_system.get(candidate) or [],
+        aggregate=True,
     )
     if content_rows:
         measured = True
@@ -937,13 +1024,18 @@ def answer_comparison_html(
         str(row.get("name")): str(row.get("question_set") or "questions")
         for row in evaluations
     }
-    # Set order is the order the sets first appear in the evaluations, which is
-    # the order the config lists them: records are written session by session,
-    # case then set then repeat. Alphabetical would put a `warmup` set after
-    # `series_d` and read as though it ran last.
-    set_rank: dict[str, int] = {}
-    for row in evaluations:
-        set_rank.setdefault(str(row.get("question_set") or "questions"), len(set_rank))
+    # Ordered by NAME, naturally: series_a before series_b, a1 before a2
+    # before a10. Not by first appearance in the file — that was meant to
+    # recover the config's order, and it did until a subset re-judge rewrote
+    # the file in pieces and put the carried-over set first, so the page read
+    # b, a, c. Order a reader can predict beats order that depends on which
+    # questions were last re-scored.
+    set_rank = {
+        name: index for index, name in enumerate(sorted(
+            {str(row.get("question_set") or "questions") for row in evaluations},
+            key=_natural_key,
+        ))
+    }
 
     def asked_at(name: str) -> tuple[int, float, str]:
         positions = [
@@ -957,8 +1049,10 @@ def answer_comparison_html(
         # Name as last tiebreak, so a run without positions still orders stably.
         return (
             set_rank.get(set_of.get(name) or "questions", len(set_rank)),
+            # Position keeps a conversation in the order it was asked; the
+            # natural name settles anything it does not separate.
             min(positions) if positions else float("inf"),
-            name,
+            _natural_key(name),
         )
 
     questions = sorted(by_question, key=asked_at)
@@ -1354,6 +1448,8 @@ table.expect td:first-child { width: 18px; text-align: center; }
 .metrics .num, .metrics .delta { text-align: right; font-variant-numeric: tabular-nums; }
 .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
 .missing { color: var(--faint); font-style: italic; font-size: 12.5px; }
+/* The answer said something, and it was the opposite of the truth. */
+.bad-val { color: var(--bad); font-weight: 600; }
 .repeats[hidden] { display: none; }
 .repeats { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
   padding:10px 24px; border-bottom:1px solid #E2E8F0; background:#F4F6F9; }

@@ -16,9 +16,10 @@ from agentic_eval.adapters import build_adapter
 from agentic_eval.cases import describe_case
 from agentic_eval.workers import assert_workers_are_isolated, bind_to_worker
 from agentic_eval.config import EvalConfig
+from agentic_eval import memory_store
 from agentic_eval.content import evaluate_runs_file
 from agentic_eval.models import AdapterResult, RunRequest
-from agentic_eval.process import ManagedProcess
+from agentic_eval.process import ManagedProcess, expand
 from agentic_eval.render.run_summary import comparison_markdown, write_blind_review
 from agentic_eval.layout import RunLayout
 from agentic_eval.scoring import aggregate, compare, score_content, score_memory
@@ -214,18 +215,28 @@ class ComparisonRunner:
                 record for session in sessions
                 for record in self._run_session(session, 0)
             ]
-        # Each worker owns one server instance per system for the whole run, so
-        # the worker index IS the slot: handing sessions to a shared pool would
-        # let two of them land on one server and interleave there.
+        # A worker owns CASES, not an arbitrary slice of sessions. Two workers
+        # on the same case would still collide even with separate servers,
+        # because the memory store is shared and `/rewind` purges it BY CASE:
+        # one worker opening a session would delete the memories the other is
+        # mid-way through writing. Owning the case end to end removes the
+        # window entirely, and repeats of a case stay strictly sequential —
+        # which is what makes them independent.
+        cases = self._cases
+        owner = {case: index % self.workers for index, case in enumerate(cases)}
+        idle = self.workers - len({owner[case] for case in cases})
         print(
             f"  {len(sessions)} sessions over {self.workers} workers "
-            f"({mode}); questions stay in order within each"
+            f"({mode}); each worker owns whole cases, questions in order"
+            + (f"; {idle} worker(s) idle — only {len(cases)} case(s) to own"
+               if idle > 0 else "")
         )
         results: list[list[dict[str, Any]]] = [[] for _ in sessions]
 
         def run_slot(worker: int) -> None:
-            for index in range(worker, len(sessions), self.workers):
-                results[index] = self._run_session(sessions[index], worker)
+            for index, session in enumerate(sessions):
+                if owner[session.case_id] == worker:
+                    results[index] = self._run_session(session, worker)
 
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             list(pool.map(run_slot, range(self.workers)))
@@ -258,8 +269,37 @@ class ComparisonRunner:
         for process in reversed(self.processes):
             process.stop()
 
+    def _memory_config(self) -> dict[str, Any] | None:
+        """Where the system's memory store lives, if the run should restore it."""
+        config = dict(self.config.experiment.get("memory_store") or {})
+        if not config.get("restore_after_run"):
+            return None
+        # `${AMEM_STORE_URL:-...}` is written the same way as every other
+        # environment reference in the config, so it resolves the same way.
+        return {
+            **config,
+            "url": expand(config.get("url") or "http://127.0.0.1:6333"),
+            "collection": expand(config.get("collection") or "amem_memories"),
+        }
+
     def run(self) -> Path:
         records: list[dict[str, Any]] = []
+        # Snapshot BEFORE anything starts. A store that cannot be read is
+        # reported and left alone — "no snapshot" must never be mistaken for
+        # "snapshot of nothing", or a failed read would authorise wiping it.
+        memory = self._memory_config()
+        before = None
+        if memory:
+            try:
+                before = memory_store.snapshot(
+                    memory["url"], memory["collection"],
+                )
+                print(f"  memory store: {len(before)} memories before the run")
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                print(
+                    f"  memory store: could not snapshot ({exc}); it will be "
+                    "left exactly as the run leaves it"
+                )
         try:
             self._start()
             mode = self.config.experiment["mode"]
@@ -269,6 +309,22 @@ class ComparisonRunner:
                 records.extend(self._stateful())
         finally:
             self._stop()
+            if memory and before is not None:
+                try:
+                    moved = memory_store.restore(
+                        memory["url"], memory["collection"], before,
+                    )
+                    print(
+                        f"  memory store: removed {moved['removed']} written "
+                        f"by this run, reinstated {moved['reinstated']}; "
+                        f"back to {len(before)}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"  memory store: RESTORE FAILED ({exc}). It still "
+                        f"holds this run's memories; {len(before)} were there "
+                        "before."
+                    )
 
         summary = aggregate(
             records, modules=self.config.experiment.get("eval_modules"),

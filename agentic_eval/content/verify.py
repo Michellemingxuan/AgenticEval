@@ -31,6 +31,7 @@ from agentic_eval.content.numeric import (
     _resolve_relation_side, _satisfies, _written_tolerance,
     comparison_variants as _comparison_variants,
     is_period_expression as _is_period_expression,
+    is_stated_constant as _is_stated_constant,
     infer_comparator as _infer_comparator,
 )
 from agentic_eval.content.verdicts import (
@@ -70,6 +71,10 @@ JUDGE_ERROR_FAILURES = {
     # as unlocatable. Whether the period is right is a real question, but not
     # one the NUMERIC trace can answer, so it is excluded rather than charged.
     "not_a_quantity",
+    # A constant the ANSWER supplied — "the risky threshold of 20". Tool output
+    # holds measurements, not the thresholds they are judged against, so this
+    # trace can never locate one and reported that as an invented figure.
+    "stated_constant",
 }
 
 #: Failures that ARE evidence about the system.
@@ -328,7 +333,12 @@ def _normalize_fact_results(
             written = mention.get("written")
             # "all above 720" is a bound, not an equality; read as `==` it was
             # a mismatch against the 721 that proves it.
-            if _is_period_expression(written, mention.get("measures")):
+            measures = mention.get("measures")
+            if _is_period_expression(written, measures) or _is_stated_constant(measures):
+                excluded = (
+                    "not_a_quantity" if _is_period_expression(written, measures)
+                    else "stated_constant"
+                )
                 # Decided before anything is parsed: reading "mid-2024" as a
                 # number is what produced the bad verdict in the first place.
                 number_results.append({
@@ -342,7 +352,7 @@ def _normalize_fact_results(
                     "traceable_to_tool_output": False,
                     "grounded_in_tool_result": False,
                     "deterministically_correct": None,
-                    "trace_failure": "not_a_quantity",
+                    "trace_failure": excluded,
                 })
                 continue
             comparator = _infer_comparator(

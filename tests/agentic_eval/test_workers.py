@@ -223,3 +223,31 @@ def test_the_record_order_does_not_depend_on_worker_timing(tmp_path, monkeypatch
         for r in rows
     ]
     assert identity(serial_records) == identity(parallel_records)
+
+
+def test_a_worker_owns_whole_cases(tmp_path, monkeypatch):
+    """Two workers on one case collide even with separate servers.
+
+    The memory store is shared and `/rewind` purges it BY CASE, so one worker
+    opening a session deletes the memories the other is mid-way through
+    writing — and repeats stop being independent, which is the one thing they
+    must be.
+    """
+    runner, built = _runner(tmp_path, monkeypatch, workers=2, slot="owned")
+    runner._stateful()
+    # Each adapter instance belongs to one worker; every session it served
+    # must be for a single case.
+    for adapter in built:
+        cases = {case for case, _name, _run in adapter.asked}
+        assert len(cases) <= 1, f"worker touched {cases}"
+
+
+def test_more_workers_than_cases_leaves_some_idle(tmp_path, monkeypatch, capsys):
+    """Owning whole cases caps useful concurrency at the number of cases.
+
+    Better to say so than to look busy: an idle worker is a server started for
+    nothing.
+    """
+    runner, _ = _runner(tmp_path, monkeypatch, workers=3, slot="idle")
+    runner._stateful()
+    assert "idle" in capsys.readouterr().out

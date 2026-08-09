@@ -34,10 +34,27 @@ Return JSON with key `claims`. Each claim carries:
     claim_type          quantitative | quantitative_comparison | qualitative |
                         qualitative_comparison | causal | compound |
                         recommendation | uncertainty_or_data_gap | opinion
-    is_factual          false ONLY for recommendation / opinion / pure
-                        data-gap notes. A statement about METHOD ("commercial
-                        cards are identified by Card Portfolio = 'SBS'") IS
-                        factual: it is checkable against the call that ran it.
+    is_factual          false for recommendation / opinion / pure data-gap
+                        notes, AND for anything the answer says about ITSELF —
+                        where its material came from, what was or was not
+                        available to it, what it is "based on":
+
+                          "There are no prior curated reports for this case;
+                           the answer is based solely on live specialist
+                           analysis."
+
+                        That is provenance, not a finding about the customer.
+                        No operation produces it, so it can never ground, and
+                        marking it factual made the SAME sentence score three
+                        different ways across one run — excluded here,
+                        factual-grounded there, ungrounded in a third.
+
+                        A statement about METHOD is different and IS factual
+                        ("commercial cards are identified by Card Portfolio =
+                        'SBS'"): it describes how the data was read and is
+                        checkable against the call that ran it. The test is
+                        whether the sentence is about the CASE (factual) or
+                        about the ANSWER (not).
     stance              asserted | attributed_unendorsed | attributed_refuted
     restates_claim_id   id of the earlier claim asserting the same fact, else null
     block_id            the block it came from

@@ -328,6 +328,9 @@ class ContentEvaluator:
             claims, rubric, answer=answer,
             cwd=self.config.get("oracle_cwd"),
             timeout=float(self.config.get("oracle_timeout_s", 60)),
+            # Ground truth is per case. Without this the oracle silently
+            # answered for whichever case it defaults to.
+            case_id=record.get("case_id"),
         )
         metrics = calculate_content_metrics(
             claims, fact_results, must_have_results,
@@ -394,8 +397,28 @@ def evaluate_runs_file(
     output_dir.mkdir(parents=True, exist_ok=True)
     layout = RunLayout(output_dir).ensure()
     out_path = layout.evaluations
-    evaluations = read_jsonl(out_path) if resume and out_path.exists() else []
-    if not resume:
+    existing = read_jsonl(out_path) if out_path.exists() else []
+    if resume:
+        evaluations = existing
+    elif questions:
+        # Re-judging a SUBSET must not destroy the rest. `--question a1`
+        # without `--resume` truncated the file and took eight b2 evaluations
+        # with it — work that cost judge calls and was not recoverable.
+        # Answers for other questions are carried over untouched; the named
+        # ones are re-judged from scratch, which is what was asked for.
+        wanted = set(questions)
+        evaluations = [
+            row for row in existing if str(row.get("name")) not in wanted
+        ]
+        out_path.write_text(
+            "".join(
+                json.dumps(row, ensure_ascii=False, default=str) + "\n"
+                for row in evaluations
+            ),
+            encoding="utf-8",
+        )
+    else:
+        evaluations = []
         out_path.write_text("", encoding="utf-8")
     # `case_id` is part of the identity: without it a multi-case run's second
     # case looks already-evaluated to `--resume` and is silently skipped.
@@ -405,7 +428,9 @@ def evaluate_runs_file(
             row.get("name"), row.get("run_index"), row.get("sequence_position"),
         )
 
-    completed = {identity(row) for row in evaluations}
+    # Only a resume treats carried-over rows as done; a subset re-judge must
+    # still re-run the questions it named.
+    completed = {identity(row) for row in evaluations} if resume else set()
     # A run captured before the adapter learned a field cannot be scored for
     # it. Say so once, plainly, rather than letting the metric read zero.
     stale = sorted({
