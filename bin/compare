@@ -62,12 +62,15 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$CONFIG" ]] || { echo "--config is required" >&2; exit 2; }
 
-# The judge needs OPENAI_API_KEY; the shell usually has not got it.
+# Sourced BEFORE the plan, because the env file is where LLM_BACKEND lives in
+# the private environment, and the transport decides whether a key is needed.
 if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
-: "${OPENAI_API_KEY:?set it, or point --env-file at a file that does}"
 
 echo "== plan"
-agentic-eval validate "${ARGS[@]}" | python3 -c '
+# One validate call feeds both the plan and the key check. It needs no
+# credentials, so it can run before them.
+PLAN=$(agentic-eval validate "${ARGS[@]}")
+printf '%s' "$PLAN" | python3 -c '
 import json,sys; d=json.load(sys.stdin)
 cases = d.get("cases") or []
 sets = d.get("question_sets") or {}
@@ -75,10 +78,21 @@ print("   %d records over %s, %d question(s) in %d set(s), %d case(s), %d worker
     d.get("planned_records", 0), d.get("mode", "?"),
     len(d.get("questions") or []), max(1, len(sets)),
     max(1, len(cases)), d.get("workers", 1)))
+print("   judge: %s via %s" % (d["content_evaluation"]["model"],
+                               d["content_evaluation"]["backend"]))
 for name, qs in sets.items():
     print("     set %s: %d questions" % (name, len(qs)))
 for case in cases:
     print("     case %s" % (repr(case) if case != case.strip() else case))'
+
+# Only the OpenAI transport needs a key. SafeChain authenticates through the
+# gateway, and demanding OPENAI_API_KEY there refused to start a run that
+# never had anything to send to OpenAI.
+BACKEND=$(printf '%s' "$PLAN" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["content_evaluation"]["backend"])')
+if [[ "$BACKEND" != safechain ]]; then
+  : "${OPENAI_API_KEY:?set it, or point --env-file at a file that does}"
+fi
 
 if (( SKIP_RUN )); then
   # Re-judge answers already on disk. The flag used to be parsed and then
