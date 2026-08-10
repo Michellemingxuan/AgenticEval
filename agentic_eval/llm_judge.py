@@ -60,6 +60,11 @@ def build_client(config: dict[str, Any], backend: str, timeout_s: float) -> Any:
     if backend == "safechain":
         return SafeChainClient(
             str(config.get("model") or "gpt-4.1"), timeout_s=timeout_s,
+            # Same knob as the OpenAI branch above. It used to be read only
+            # there, so a config asking for eight retries got none here and a
+            # single slow call ended a run that had already paid for every
+            # answer before it.
+            max_retries=int(config.get("max_retries", 8)),
         )
 
     raise ValueError(
@@ -93,9 +98,12 @@ class SafeChainClient:
     "asyncio.run() cannot be called from a running event loop".
     """
 
-    def __init__(self, model_name: str, *, timeout_s: float) -> None:
+    def __init__(
+        self, model_name: str, *, timeout_s: float, max_retries: int = 8,
+    ) -> None:
         self._model_name = model_name
         self._timeout_s = timeout_s
+        self._max_retries = max(0, int(max_retries))
         self._llm: Any = None            # built on first use, then cached
         self.chat = self
 
@@ -107,7 +115,7 @@ class SafeChainClient:
         self, *, model: str, messages: list[dict[str, Any]],
         response_format: Any = None, **kwargs: Any,
     ) -> Any:
-        reply = asyncio.run(self._acreate(messages, response_format))
+        reply = self._with_retries(messages, response_format)
         usage = getattr(reply, "usage_metadata", None) or {}
         return SimpleNamespace(
             choices=[SimpleNamespace(
@@ -119,6 +127,37 @@ class SafeChainClient:
                 total_tokens=usage.get("total_tokens"),
             ),
         )
+
+    def _with_retries(
+        self, messages: list[dict[str, Any]], response_format: Any,
+    ) -> Any:
+        """Retry a timed-out call; surface anything else immediately.
+
+        ONLY timeouts. A `FirewallRejection`, a schema error or a bad request
+        will fail the same way eight times over, and retrying them turns a
+        clear error into a slow one.
+
+        The cached model is dropped between attempts. A judging pass runs for
+        an hour or more, and the failure mode this exists for — a call that
+        hangs until the deadline — is as likely to be a stale connection or an
+        expired token as a busy gateway. Rebuilding costs one token
+        acquisition and removes that whole class from the retry.
+        """
+        delay = 2.0
+        for attempt in range(self._max_retries + 1):
+            try:
+                return asyncio.run(self._acreate(messages, response_format))
+            except (TimeoutError, asyncio.TimeoutError):
+                if attempt >= self._max_retries:
+                    raise
+                self._llm = None
+                print(
+                    f"  judge: no reply within {self._timeout_s:.0f}s; "
+                    f"retry {attempt + 1}/{self._max_retries} in {delay:.0f}s"
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 60.0)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def _amodel(self) -> Any:
         """Build once, awaited and bounded. `amodel()` does token acquisition."""

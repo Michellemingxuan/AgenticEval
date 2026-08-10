@@ -135,8 +135,15 @@ content_evaluation:
     backend: openai
     model: gpt-4.1
     temperature: 0
+    # Applies to BOTH transports now. On safechain only timeouts are retried,
+    # with backoff and a rebuilt model — a rejection or a schema error fails
+    # the same way eight times over, so retrying it would only be slower.
     max_retries: 8
-    timeout_s: 180
+    # Generous because the gateway is slower than the API and the evidence
+    # call carries a ~13k-token ledger. 180s timed out on `claim_eligibility`
+    # mid-pass; the cost of a high ceiling is a slow failure, the cost of a low
+    # one is a dead run.
+    timeout_s: 600
 
 systems:
   previous:
