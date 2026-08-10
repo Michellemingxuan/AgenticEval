@@ -629,6 +629,22 @@ LLM_BACKEND=safechain agentic-eval validate --config experiments/configs/series_
 # {'enabled': True, 'auto_run': False, 'model': 'gpt-4.1', 'backend': 'safechain'}
 ```
 
+SafeChain reads its own configuration through `ee_config`, which wants
+`CONFIG_PATH` — so the judge needs the same environment the system under test
+runs in, not just an API key. `run`, `validate` and `evaluate-content` fill
+gaps in the environment from a `KEY=value` file:
+
+```bash
+agentic-eval evaluate-content --config <cfg> --runs <runs.jsonl> --env-file .env
+```
+
+Without the flag they look at `$AGENTIC_EVAL_ENV`, then at this repo's own
+`.env`. **Already-exported variables always win** — the file fills gaps and
+never overrules something a caller set on purpose, which matters when one of
+those values decides where judging traffic goes. The path and the count are
+printed to stderr, so a file that changes the backend leaves a trace. A file
+named by flag or variable and not found is an error, not a shrug.
+
 The gateway also needs `nest-asyncio` (`pip install -e '.[safechain]'`), plus
 `safechain` and `langchain-core` from the private index — those two are not
 declared as dependencies, since naming them would make the package

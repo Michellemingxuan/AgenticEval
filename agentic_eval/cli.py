@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from agentic_eval import envfile
 from agentic_eval.cases import (
     describe_case, discover_case_ids, whitespace_padded_case_ids,
 )
@@ -409,7 +410,24 @@ def main() -> None:
         "--run-index", type=int, default=None,
         help="which repeat to sample; default: the first repeat present",
     )
+    for sub in (run_parser, validate_parser, content_parser):
+        sub.add_argument(
+            "--env-file",
+            help="KEY=value file to fill gaps in the environment "
+                 "(judge credentials, LLM_BACKEND, CONFIG_PATH). Default: "
+                 "$AGENTIC_EVAL_ENV, else the repo's own .env if present. "
+                 "Already-exported variables always win.",
+        )
     args = parser.parse_args()
+
+    # Before anything reads os.environ. LLM_BACKEND decides the judge's
+    # transport and CONFIG_PATH configures it, so a file loaded after the
+    # client is built would arrive too late to matter.
+    loaded = envfile.load(getattr(args, "env_file", None))
+    if loaded:
+        path, applied = loaded
+        # stderr: `validate` writes JSON that `bin/compare` parses.
+        print(f"env: {path} ({applied} variable(s) set)", file=sys.stderr)
 
     if args.command == "compare-answers":
         path = args.evaluations.expanduser().resolve()

@@ -427,9 +427,14 @@ def test_validate_reports_the_transport_the_judge_will_use(tmp_path, monkeypatch
     """Preflight has to be able to answer 'which endpoint will this call?'."""
     import json
     import sys
+    from agentic_eval import envfile
     from agentic_eval.cli import main
     cfg = _config_pinning_openai(tmp_path)
     monkeypatch.setenv("LLM_BACKEND", "safechain")
+    # Hermetic: no .env may be discovered, or this asserts on the developer's
+    # filesystem rather than on the code.
+    monkeypatch.delenv("AGENTIC_EVAL_ENV", raising=False)
+    monkeypatch.setattr(envfile, "_ROOT", tmp_path)
     monkeypatch.setattr(sys, "argv", ["agentic-eval", "validate", "--config", str(cfg)])
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(str(a[0])))

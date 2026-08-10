@@ -43,7 +43,16 @@
 # follow-up selected without the turn it refers to.
 set -euo pipefail
 
-CONFIG="" ; ARGS=() ; ENV_FILE="${AGENTIC_EVAL_ENV:-../AgenticSys_v2/.env}"
+# This repo's own .env first — a copy placed here is meant to be used, and
+# ../AgenticSys_v2/.env is resolved from the CALLER's cwd, so it silently
+# missed whenever bin/compare ran from anywhere else.
+CONFIG="" ; ARGS=()
+ENV_FILE="${AGENTIC_EVAL_ENV:-}"
+if [[ -z "$ENV_FILE" ]]; then
+  for candidate in "$(dirname "${BASH_SOURCE[0]}")/../.env" "../AgenticSys_v2/.env"; do
+    [[ -f "$candidate" ]] && { ENV_FILE="$candidate"; break; }
+  done
+fi
 SKIP_RUN=0 ; RUNS=""
 
 # Prefer the installed console script; fall back to running the package out of
