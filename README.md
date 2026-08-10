@@ -645,6 +645,26 @@ those values decides where judging traffic goes. The path and the count are
 printed to stderr, so a file that changes the backend leaves a trace. A file
 named by flag or variable and not found is an error, not a shrug.
 
+`bin/safechain-doctor` checks the whole transport before a run depends on it,
+in escalating stages:
+
+```bash
+bin/safechain-doctor            # environment, imports, ee_config — no network
+bin/safechain-doctor --build    # also await amodel(), which acquires a token
+bin/safechain-doctor --call     # also one real JSON-mode round trip
+```
+
+The default stage is offline and answers the question that costs a run to
+discover otherwise: whether `CONFIG_PATH` is set, whether it points at a file
+that exists, and — when `ee_config` is importable — which variables and default
+filenames the package itself reads. Secrets are reported as `set (N chars)`,
+never echoed, because this output gets pasted into tickets.
+
+`--call` goes through `agentic_eval.llm_judge`, not a hand-rolled chain: a
+probe with its own code path can pass while the judge fails, which is the one
+outcome a probe must not have. Exit status is 0 only if every stage that ran
+passed.
+
 The gateway also needs `nest-asyncio` (`pip install -e '.[safechain]'`), plus
 `safechain` and `langchain-core` from the private index — those two are not
 declared as dependencies, since naming them would make the package

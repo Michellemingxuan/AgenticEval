@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""What the SafeChain judge would find, reported before a run depends on it.
+
+The private environment's failures arrive late and wearing the wrong name: a
+missing `CONFIG_PATH` surfaces as `ee_config.exceptions.ConfigParseError` after
+both systems have already answered, and an absent compliance template surfaces
+as a refusal to judge. Neither says "your environment is not set up", and both
+cost a full run to discover.
+
+So: check the same things in the same order, cheaply, and say which one is
+missing. The stages escalate, and each is skippable by stopping early:
+
+    (default)   environment, imports, ee_config — no network at all
+    --build     also await amodel(), which acquires a token
+    --call      also one real JSON-mode round trip through the judge's client
+
+The last stage deliberately uses `agentic_eval.llm_judge` rather than a
+hand-rolled chain. A probe that builds its own path can pass while the judge
+fails, which is the one outcome a probe must not have.
+
+Exit status is 0 only if every stage that ran passed.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+#: Printed as "set (N chars)" rather than echoed. A doctor's output gets pasted
+#: into chat threads and tickets.
+_SECRET = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+_STATUS = {"ok": "  ok  ", "fail": " FAIL ", "warn": " warn ", "info": "      "}
+
+_failures: list[str] = []
+
+
+def say(status: str, label: str, detail: str = "") -> None:
+    print(f"[{_STATUS[status]}] {label}" + (f"  {detail}" if detail else ""))
+    if status == "fail":
+        _failures.append(label)
+
+
+def show_value(name: str, value: str) -> str:
+    if any(word in name.upper() for word in _SECRET):
+        return f"set ({len(value)} chars)"
+    return value
+
+
+def section(title: str) -> None:
+    print(f"\n== {title}")
+
+
+def environment(env_file: str | None) -> None:
+    section("environment")
+    try:
+        sys.path.insert(0, str(_ROOT))
+        from agentic_eval import envfile
+
+        loaded = envfile.load(env_file)
+        if loaded:
+            say("ok", "env file", f"{loaded[0]} ({loaded[1]} variable(s) set)")
+        else:
+            say("info", "env file", "none found; using the shell as-is")
+    except Exception as exc:  # noqa: BLE001 - the doctor never dies on a check
+        say("warn", "env file", f"could not load ({exc})")
+
+    for name, required in (
+        ("LLM_BACKEND", False), ("CONFIG_PATH", True),
+        ("SAFECHAIN_MODEL", False), ("OPENAI_API_KEY", False),
+    ):
+        value = os.environ.get(name)
+        if value:
+            say("ok", name, show_value(name, value))
+        elif required:
+            say("fail", name, "not set — ee_config needs it (or a file_path)")
+        else:
+            say("info", name, "not set")
+
+    backend = os.environ.get("LLM_BACKEND")
+    if backend and backend != "safechain":
+        say("warn", "transport", f"LLM_BACKEND={backend}, so the judge will NOT use safechain")
+
+    path = os.environ.get("CONFIG_PATH")
+    if path and not Path(path).exists():
+        say("fail", "CONFIG_PATH target", f"no such file: {path}")
+
+
+def imports() -> None:
+    section("imports")
+    for module, attr, why in (
+        ("safechain", None, "the gateway package"),
+        ("safechain.core.model", "amodel", "async model factory"),
+        ("safechain.prompts", "ValidChatPromptTemplate", "compliance template"),
+        ("langchain_core.prompts", "MessagesPlaceholder", "runtime message list"),
+        ("ee_config", None, "safechain's configuration layer"),
+        ("nest_asyncio", None, "sync->async bridge, pip install -e '.[safechain]'"),
+    ):
+        try:
+            loaded = importlib.import_module(module)
+        except Exception as exc:  # noqa: BLE001
+            status = "warn" if module == "nest_asyncio" else "fail"
+            say(status, module, f"{type(exc).__name__}: {exc} — {why}")
+            continue
+        if attr and not hasattr(loaded, attr):
+            say("fail", f"{module}.{attr}", f"missing — {why}")
+            continue
+        version = getattr(loaded, "__version__", "")
+        say("ok", module + (f".{attr}" if attr else ""),
+            f"{version}".strip() or why)
+
+
+def ee_config_layout() -> None:
+    """Where its configuration is expected to come from, read off the package.
+
+    The error message offers two routes — an env var and a `file_path` — and
+    says nothing about a default location or a filename. The package's own
+    source does.
+    """
+    section("ee_config")
+    try:
+        module = importlib.import_module("ee_config")
+    except Exception as exc:  # noqa: BLE001
+        say("info", "ee_config", f"not importable ({exc}); nothing to inspect")
+        return
+    directory = Path(getattr(module, "__file__", "") or ".").parent
+    say("info", "package", str(directory))
+    configs = sorted(
+        p.name for p in directory.rglob("*")
+        if p.suffix in {".yaml", ".yml", ".json", ".ini", ".toml"}
+    )
+    say("info", "config-shaped files", ", ".join(configs[:12]) or "none shipped")
+
+    # What the package itself names. Grepping its source beats guessing, and
+    # the answer is usually one constant.
+    hits: list[str] = []
+    for source in directory.rglob("*.py"):
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for number, text_line in enumerate(text.splitlines(), 1):
+            if "CONFIG_PATH" in text_line or "getenv" in text_line or "environ" in text_line:
+                hits.append(f"{source.relative_to(directory)}:{number}: {text_line.strip()[:100]}")
+    for hit in hits[:12]:
+        say("info", "reads", hit)
+    if len(hits) > 12:
+        say("info", "reads", f"... and {len(hits) - 12} more")
+
+
+def build(model: str, timeout: float, do_call: bool) -> None:
+    section("build" + (" and call" if do_call else ""))
+    sys.path.insert(0, str(_ROOT))
+    try:
+        from agentic_eval.llm_judge import OpenAIJudgeClient
+    except Exception as exc:  # noqa: BLE001
+        say("fail", "agentic_eval.llm_judge", f"{type(exc).__name__}: {exc}")
+        return
+
+    config = {"backend": "safechain", "model": model, "timeout_s": timeout}
+    try:
+        client = OpenAIJudgeClient(config)
+        say("ok", "client", type(client._client).__name__)
+    except Exception as exc:  # noqa: BLE001
+        say("fail", "client", f"{type(exc).__name__}: {exc}")
+        return
+
+    if not do_call:
+        say("info", "call", "skipped; pass --call for one real round trip")
+        return
+
+    # Exactly what the cascade does: JSON mode, one system + one user message.
+    try:
+        reply = client.complete_json(
+            task="doctor",
+            system_prompt='Reply with JSON only: {"ok": true}',
+            payload={"say": "ok"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        say("fail", "round trip", f"{type(exc).__name__}: {exc}")
+        return
+    if not isinstance(reply, dict):
+        say("fail", "round trip", f"expected a JSON object, got {type(reply).__name__}")
+        return
+    say("ok", "round trip", json.dumps(reply)[:120])
+    usage = client.calls[-1] if client.calls else {}
+    say("info", "tokens", json.dumps({
+        key: usage.get(key) for key in
+        ("model", "latency_seconds", "prompt_tokens", "completion_tokens")
+    }))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="safechain-doctor",
+        description="Check the SafeChain judge transport before a run needs it.",
+    )
+    parser.add_argument("--env-file", default=None,
+                        help="KEY=value file to load first; same rules as the CLI")
+    parser.add_argument("--model", default=os.environ.get("SAFECHAIN_MODEL", "gpt-4.1"))
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--build", action="store_true",
+                        help="also build the model (acquires a token over the network)")
+    parser.add_argument("--call", action="store_true",
+                        help="also make one real JSON-mode call (implies --build)")
+    args = parser.parse_args()
+
+    print(f"python  {sys.executable}")
+    print(f"repo    {_ROOT}")
+    environment(args.env_file)
+    imports()
+    ee_config_layout()
+    if args.build or args.call:
+        build(args.model, args.timeout, args.call)
+    else:
+        section("build")
+        say("info", "skipped", "pass --build to acquire a token, --call to send one request")
+
+    print()
+    if _failures:
+        print(f"FAILED: {', '.join(_failures)}")
+        print("The judge will not run until these are resolved.")
+        return 1
+    print("All checks passed." if (args.build or args.call) else
+          "Offline checks passed. Re-run with --call to prove the transport end to end.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
