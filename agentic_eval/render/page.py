@@ -182,7 +182,10 @@ def _fmt_value(value: Any, kind: str) -> str:
     if value is None:
         return "—"
     if kind == "pct":
-        return f"{100 * float(value):.0f}%"
+        # One decimal where it says something. Rounding 87.4 to 87 threw away
+        # the digit the content rates already kept, so two rates on the same
+        # page disagreed about their own precision.
+        return f"{100 * float(value):.1f}".rstrip("0").rstrip(".") + "%"
     if kind == "sec":
         return f"{float(value):.1f}s"
     number = float(value)
@@ -236,15 +239,30 @@ def _module_table(
     extra_rows: list[str] | None = None,
 ) -> str:
     base_group, cand_group = base_group or {}, cand_group or {}
-    rows = list(extra_rows or [])
+    rows, group = list(extra_rows or []), 0
     for key, label, higher_is_better, kind in spec:
         base_value, cand_value = _dig(base_group, key), _dig(cand_group, key)
         if base_value is None and cand_value is None and key not in _ALWAYS_SHOWN:
             continue
+
+        def cell(group: dict[str, Any], value: Any) -> str:
+            # `x.mean` has `x.min` and `x.max` beside it in the distribution
+            # the module already computed. This is one question, so that range
+            # is over its repeats and cases — the thing a mean hides.
+            if value is None or not key.endswith(".mean"):
+                return _fmt_value(value, kind)
+            root = key[: -len(".mean")]
+            low, high = _dig(group, f"{root}.min"), _dig(group, f"{root}.max")
+            if low is None or high is None:
+                return _fmt_value(value, kind)
+            return _with_range(float(value), float(low), float(high), kind)
+
+        group += key in _GROUP_STARTS
+        klass = ' class="gband"' if group % 2 else ""
         rows.append(
-            f"<tr><td>{html.escape(label)}</td>"
-            f'<td class="num">{_fmt_value(base_value, kind)}</td>'
-            f'<td class="num">{_fmt_value(cand_value, kind)}</td>'
+            f"<tr{klass}><td>{html.escape(_label_for(label, aggregate=False))}</td>"
+            f'<td class="num">{cell(base_group, base_value)}</td>'
+            f'<td class="num">{cell(cand_group, cand_value)}</td>'
             f"{_delta_cell(base_value, cand_value, higher_is_better, kind)}</tr>"
         )
     if not rows:
@@ -571,13 +589,38 @@ def _expectations_block(evaluation: dict[str, Any] | None) -> str:
     )
 
 
-def _totals(evaluations: list[dict[str, Any]], key: str) -> float | None:
-    """Sum one metric across every repeat, or None if no repeat reported it."""
-    values = [
-        float(value) for row in evaluations
-        if (value := (row.get("metrics") or {}).get(key)) is not None
-    ]
-    return sum(values) if values else None
+def _totals(
+    evaluations: list[dict[str, Any]], key: str, *, per_pass: bool = False,
+) -> float | None:
+    """Sum a metric across records, or across questions once averaged.
+
+    `per_pass=False` — at ONE question, the raw sum. "Grounded 67% (2/3)" says
+    two of the three claims that question produced were grounded: the counts
+    are the EVIDENCE for the rate, and averaging them to "0.7/1" hides how
+    much evidence there was.
+
+    `per_pass=True` — each question's mean over its cases and repeats, then
+    summed over questions. This is the aggregate reading, and it is the one
+    that has to be comparable: pooled, a count scales with the shape of the
+    run, so a k=3 two-case run reports six times the claims of a k=1
+    single-case one and neither number can be set beside the other. Within a
+    run it also stops a question that survived more repeats from counting for
+    more than one that lost some.
+
+    Ratios are identical either way while every question has the same number
+    of records — numerator and denominator scale together — so this changes
+    the counts, not the rates, until answers go missing.
+    """
+    per_question: dict[str, list[float]] = {}
+    for row in evaluations:
+        value = (row.get("metrics") or {}).get(key)
+        if value is not None:
+            per_question.setdefault(str(row.get("name")), []).append(float(value))
+    if not per_question:
+        return None
+    if not per_pass:
+        return sum(sum(values) for values in per_question.values())
+    return sum(sum(values) / len(values) for values in per_question.values())
 
 
 def _macro_rate(
@@ -606,20 +649,88 @@ def _macro_rate(
     return (_mean(rates), len(rates)) if rates else (None, 0)
 
 
+
+#: Rows that begin a new group. These tables carry several kinds of metric —
+#: on System, per-question rates, then per-call ones, then costs — and read as
+#: one undifferentiated list without a break. Alternating bands separate them
+#: without a rule or a heading: nothing is added to the table, the shading
+#: just stops a per-call rate from sitting flush against a per-question one.
+_GROUP_STARTS = {
+    # Content: the judged rates, then everything counted from claims.
+    "all_factual_claim_count",
+    # System: question-based, then tool-call based, then cost.
+    "tool_call_success_rate", "llm_call_count.mean",
+}
+
+
+#: At ONE question the aggregate qualifiers are wrong: nothing is totalled
+#: across questions and nothing is a mean over them. The row shows that
+#: question's own mean over its repeats and cases, so it is just "Claims".
+_QUESTION_LABELS = {
+    "Total claims": "Claims",
+    "Total orthogonal claims": "Orthogonal claims",
+    "· total failed calls": "· failed calls",
+    "LLM calls mean": "LLM calls",
+    "Tokens mean": "Tokens",
+    "Latency mean": "Latency",
+}
+
+
+def _label_for(label: str, *, aggregate: bool) -> str:
+    return label if aggregate else _QUESTION_LABELS.get(label, label)
+
+
+def _per_record(
+    runs: list[dict[str, Any]], key: str,
+) -> list[float]:
+    return [
+        float(value) for row in runs
+        if (value := (row.get("metrics") or {}).get(key)) is not None
+    ]
+
+
+def _spread(values: list[float]) -> tuple[float, float, float] | None:
+    """Mean, min and max — the range is the point.
+
+    One question answered k times over c cases gives k×c numbers, and a mean
+    alone hides whether they agreed. "16 [12–20]" says the same thing as "16"
+    plus the thing a reader actually wants to know.
+    """
+    if not values:
+        return None
+    return sum(values) / len(values), min(values), max(values)
+
+
+def _trim_pct(value: float) -> str:
+    return f"{100 * value:.1f}".rstrip("0").rstrip(".")
+
+
+def _with_range(mean: float, low: float, high: float, kind: str) -> str:
+    shown = _fmt_value(mean, kind)
+    if abs(high - low) < 1e-9:          # every repeat agreed; a range says nothing
+        return shown
+    return (
+        f"{shown} [{_fmt_value(low, kind)}–{_fmt_value(high, kind)}]"
+        if kind != "pct" else
+        f"{shown} [{_trim_pct(low)}–{_trim_pct(high)}]"
+    )
+
+
 def _content_rows(
     base_runs: list[dict[str, Any]], cand_runs: list[dict[str, Any]],
     spec=_CONTENT_METRICS, aggregate: bool = False,
 ) -> list[str]:
     """One row per content metric, as summed numerator over denominator."""
-    rows = []
+    rows, group = [], 0
     for numerator_key, denominator_key, label, higher_is_better, style in spec:
         cells, values = [], []
         for runs in (base_runs, cand_runs):
-            numerator = _totals(runs, numerator_key)
+            numerator = _totals(runs, numerator_key, per_pass=aggregate)
             # A "total" row has no denominator by design, so an absent one is
             # not the "nothing to divide by" case the guard below is for.
             denominator = (
-                None if denominator_key is None else _totals(runs, denominator_key)
+                None if denominator_key is None
+                else _totals(runs, denominator_key, per_pass=aggregate)
             )
             if numerator is None or (style != "total" and not denominator):
                 cells.append("—")
@@ -655,10 +766,21 @@ def _content_rows(
                 )
                 cells.append(f"{percent}%{shown}")
             elif style == "total":
-                # Summed across questions. No denominator: these are counts,
-                # and "(out of 80)" read as though orthogonality were a rate.
-                values.append(numerator)
-                cells.append(shown_n)
+                # Across questions this is a sum of per-question means. At ONE
+                # question it is that question's own mean over its repeats and
+                # cases, shown with the range those repeats spanned — a mean
+                # alone cannot say whether they agreed.
+                spread = None if aggregate else _spread(
+                    _per_record(runs, numerator_key)
+                )
+                # The delta must be computed on the number the cell SHOWS.
+                # Left as the sum it read "+7" beside "6.5 -> 8.2", which is
+                # the difference of two figures the reader cannot see.
+                values.append(numerator if spread is None else spread[0])
+                cells.append(
+                    shown_n if spread is None
+                    else _with_range(*spread, "count")
+                )
             elif style == "count":
                 # A claim count is compared as a count: "+55 claims" is the
                 # finding, and a percentage of a moving denominator hides it.
@@ -669,10 +791,30 @@ def _content_rows(
                 cells.append("—")
             else:
                 values.append(numerator / denominator)
-                cells.append(
-                    f"{100 * numerator / denominator:.0f}% "
-                    f"({shown_n}/{_fmt_value(denominator, 'count')})"
-                )
+                # The counts are the EVIDENCE for the rate, and worth showing
+                # at a question: "67% (2/3)" says how much there was. At the
+                # aggregate they are averaged, so the fraction reads
+                # "(19/21.8)" — and both numbers are already rows of their
+                # own directly above. Rate alone there.
+                percent = f"{100 * numerator / denominator:.0f}%"
+                if aggregate:
+                    cells.append(percent)
+                else:
+                    # Per ANSWER: grounded over that answer's own claims, then
+                    # averaged over the question's repeats and cases. The
+                    # pooled ratio would let one verbose answer carry the rate;
+                    # this weights every answer the same and the range says how
+                    # far they drifted.
+                    rates = [
+                        n / d for row in runs
+                        if (n := (row.get("metrics") or {}).get(numerator_key)) is not None
+                        and (d := (row.get("metrics") or {}).get(denominator_key))
+                    ]
+                    spread = _spread(rates)
+                    values[-1] = spread[0] if spread else values[-1]
+                    cells.append(
+                        percent if spread is None else _with_range(*spread, "pct")
+                    )
         if values[0] is None and values[1] is None:
             continue
         delta = (
@@ -682,8 +824,10 @@ def _content_rows(
                 "num" if style in {"count", "total"} else "pct",
             )
         )
+        group += numerator_key in _GROUP_STARTS
+        klass = ' class="gband"' if group % 2 else ""
         rows.append(
-            f"<tr><td>{html.escape(label)}</td>"
+            f"<tr{klass}><td>{html.escape(_label_for(label, aggregate=aggregate))}</td>"
             f'<td class="num">{cells[0]}</td><td class="num">{cells[1]}</td>'
             f"{delta}</tr>"
         )
@@ -836,7 +980,11 @@ def _summary_block(
         measured = True
         blocks.append(
             '<div class="mblock"><h4>Content</h4>'
-            f'<p class="tnote">totalled over questions and repeats{over_cases}</p>'
+            f'<p class="tnote">each question averaged over its repeats'
+            f'{over_cases}, then totalled across questions — so a count means '
+            f'one pass of the set and does not grow with k or the case '
+            f'list. Rates are unaffected by this: numerator and denominator '
+            f'scale together</p>'
             '<table class="metrics"><thead><tr><th>Metric</th>'
             f"<th>{html.escape(baseline)}</th><th>{html.escape(candidate)}</th>"
             "<th>Δ</th></tr></thead>"
@@ -845,10 +993,15 @@ def _summary_block(
     for title, spec, reader, note in (
         ("Consistency", _MODULE_METRICS["consistency"], module_value,
          f"macro average over questions, all repeats{over_cases}; "
-         "tool-call rows count every call, working or not — "
-         "see tool-call success under System"),
+         "tool-call rows count every call, working or not"),
+        # NOT a macro average over questions: the denominator is the questions
+        # annotated `memory_required: true`, never all of them. Unannotated
+        # questions are excluded rather than scored as misses, so the rate
+        # cannot drift with how many questions happen not to need memory.
         ("Memory", _MODULE_METRICS["memory"], module_value,
-         f"macro average over questions, all repeats{over_cases}"),
+         "memory-required questions only — hit rate over their repeats"
+         f"{' and' + over_cases.lstrip(',') if over_cases else ''}, "
+         "then averaged over those questions"),
         ("System", _MODULE_METRICS["latency"], module_value,
          f"macro average over questions, all repeats{over_cases}. "
          "Read each row on its own — the units differ. "
@@ -862,7 +1015,7 @@ def _summary_block(
          "not running is not). Only the kept attempt is counted: a replayed "
          "turn contributes its final pass, never the abandoned one"),
     ):
-        rows, real = [], False
+        rows, real, group = [], False, 0
         for key, label, higher_is_better, kind in spec:
             base_value = reader(baseline, key, kind)
             cand_value = reader(candidate, key, kind)
@@ -883,8 +1036,10 @@ def _summary_block(
                     return text
                 count = len(module_values(system, key))
                 return f"{text} ({count} question{'' if count == 1 else 's'})"
+            group += key in _GROUP_STARTS
+            klass = ' class="gband"' if group % 2 else ""
             rows.append(
-                f"<tr><td>{html.escape(label)}</td>"
+                f"<tr{klass}><td>{html.escape(label)}</td>"
                 f'<td class="num">{shown(baseline, base_value)}</td>'
                 f'<td class="num">{shown(candidate, cand_value)}</td>'
                 f"{_delta_cell(base_value, cand_value, higher_is_better, kind)}</tr>"
@@ -1567,6 +1722,15 @@ table.expect td:first-child { width: 18px; text-align: center; }
 .mblock h4 { margin: 0 0 1px; font-size: 12px; font-weight: 600; color: var(--blue-dark); }
 .tnote { margin: 0 0 8px; color: var(--faint); font-size: 11px; }
 .metrics .num, .metrics .delta { text-align: right; font-variant-numeric: tabular-nums; }
+/* Alternating bands separate kinds of metric within one table — per-question
+   rates, per-call rates, costs — without a rule or a heading row. Subtle on
+   purpose: it should register as grouping, not as stripes. */
+.metrics tr.gband td { background: var(--wash2); }
+/* Close the table top and bottom. The bands give it an interior; without an
+   edge the last row bleeds into whatever follows, and on the overview two
+   tables sit side by side with nothing saying where one stops. */
+.metrics thead th { border-bottom: 1.5px solid var(--faint); }
+.metrics tbody tr:last-child td { border-bottom: 1.5px solid var(--faint); }
 .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
 .missing { color: var(--faint); font-style: italic; font-size: 12.5px; }
 /* The answer said something, and it was the opposite of the truth. */

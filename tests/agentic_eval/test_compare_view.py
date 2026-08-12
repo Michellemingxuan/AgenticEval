@@ -101,7 +101,7 @@ def test_metrics_tab_shows_both_sides_and_a_signed_delta():
         }),
     ]
     page = answer_comparison_html(rows, baseline="old", candidate="new")
-    assert "50% (1/2)" in page and "90% (9/10)" in page
+    assert "50%" in page and "90%" in page
     # A rate delta carries its unit; a claim count is compared as a count.
     section = page.split('id="q0"', 1)[1]
     assert "+40%" in section and "+8" in section
@@ -332,9 +332,14 @@ def test_summary_section_totals_the_question_set():
     # with its own sections below, so the overall block must not claim the name.
     assert "All question sets — overall" in page
     assert "2 questions" in summary
-    # old: 1/2 = 50%   new: 2/3 = 67%
-    assert "50% (1/2)" in summary and "67% (2/3)" in summary
-    assert "totalled over" in summary
+    # old: 1/2 = 50%   new: 2/3 = 67%. Averaging the percentages instead
+    # would report new as 75% — (100% + 50%) / 2 — which is the whole point.
+    assert ">50%<" in summary and ">67%<" in summary
+    assert ">75%<" not in summary
+    # The counts are dropped at this level: they are averaged over repeats
+    # here, so "(19/21.8)" reads badly and both numbers are rows of their own.
+    assert "(2/3)" not in summary
+    assert "totalled across questions" in summary
 
 
 def test_summary_is_only_visible_on_the_metrics_tab():
@@ -674,7 +679,10 @@ def test_metrics_total_over_repeats_not_the_shown_one():
         _repeat_eval("old", 3, "q", "c", True),
     ]
     page = answer_comparison_html(rows, baseline="old", candidate="new")
-    assert "2/3" in page
+    # Two of three repeats grounded: the mean over the question's answers is
+    # 67%, and the range says they disagreed — which reading one pane could
+    # never show.
+    assert "66.7% [0–100]" in page
     assert "totalled over all 3" in page
 
 
@@ -802,8 +810,10 @@ def test_each_question_set_gets_its_own_metrics_section():
     a_block = page.split('id="set-series_a"', 1)[1].split("</section>", 1)[0]
     b_block = page.split('id="set-series_b"', 1)[1].split("</section>", 1)[0]
     # series_a: both 1/1. series_b: old 0/2, new 2/2.
-    assert "100% (1/1)" in a_block
-    assert "0% (0/2)" in b_block and "100% (2/2)" in b_block
+    # A set block is an aggregate too, so counts are averaged there and
+    # the rate stands alone; the fraction lives on the question rows.
+    assert ">100%<" in a_block
+    assert ">0%<" in b_block and ">100%<" in b_block
     assert "own session" in a_block
 
 

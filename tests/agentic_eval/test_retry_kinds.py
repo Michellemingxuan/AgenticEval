@@ -249,3 +249,105 @@ def test_a_delta_keeps_one_decimal_only_when_it_says_something():
     # Past three digits the decimal is noise, so it is dropped.
     assert plain(_delta_cell(38601, 87605.3, False, "num")) == "+49,004"
     assert plain(_delta_cell(11.3, 15.5, False, "sec")) == "+4.2"
+
+
+def test_the_memory_note_does_not_claim_to_average_over_all_questions():
+    """Its denominator is the memory-required questions, never all of them.
+
+    Unannotated questions are excluded rather than scored as misses, so
+    "macro average over questions" described a denominator the metric does
+    not use.
+    """
+    import re
+    from agentic_eval.render import answer_comparison_html
+    rows = [{"system": s, "mode": "cold", "name": "q1", "run_index": 1,
+             "question": "q", "answer": "a", "claims": [], "fact_results": [],
+             "metrics": {}} for s in ("old", "new")]
+    page = answer_comparison_html(
+        rows, baseline="old", candidate="new",
+        summary={"groups": [
+            {"system": s, "mode": "cold", "name": "q1", "memory_hit_rate": 1.0}
+            for s in ("old", "new")
+        ]},
+    )
+    note = re.findall(r'<h4>Memory</h4><p class="tnote">([^<]*)</p>', page)[0]
+    assert "memory-required questions only" in note
+    assert "macro average over questions" not in note
+
+
+def test_the_consistency_note_no_longer_points_at_another_block():
+    import re
+    from agentic_eval.render import answer_comparison_html
+    rows = [{"system": s, "mode": "cold", "name": "q1", "run_index": 1,
+             "question": "q", "answer": "a", "claims": [], "fact_results": [],
+             "metrics": {}} for s in ("old", "new")]
+    page = answer_comparison_html(
+        rows, baseline="old", candidate="new",
+        summary={"groups": [
+            {"system": s, "mode": "cold", "name": "q1",
+             "team_pairwise_jaccard": 1.0} for s in ("old", "new")
+        ]},
+    )
+    note = re.findall(r'<h4>Consistency</h4><p class="tnote">([^<]*)</p>', page)[0]
+    assert "see tool-call success under System" not in note
+    assert "working or not" in note
+
+
+def test_a_question_row_deltas_the_number_it_shows():
+    """The cell and its delta must be the same quantity.
+
+    At one question the cell shows the mean over that question's answers; a
+    delta computed on the underlying sums read "+7" beside "6.5 -> 8.2".
+    """
+    import re
+    from agentic_eval.render import answer_comparison_html
+
+    def rows(system, counts):
+        return [{
+            "system": system, "mode": "cold", "name": "q1", "run_index": i + 1,
+            "question": "q", "answer": "a", "claims": [], "fact_results": [],
+            "metrics": {"all_factual_claim_count": n, "orthogonal_claim_count": n},
+        } for i, n in enumerate(counts)]
+
+    page = answer_comparison_html(
+        rows("old", [4, 6]) + rows("new", [8, 10]),   # means 5 and 9
+        baseline="old", candidate="new",
+    )
+    section = page.split('id="q0"', 1)[1]
+    line = re.search(r"<tr[^>]*><td>Claims</td>(.*?)</tr>", section).group(1)
+    plain = re.sub(r"<[^>]+>", " ", line)
+    assert "5 [4–6]" in plain and "9 [8–10]" in plain
+    assert "+4" in plain          # 9 - 5, not 18 - 10
+
+
+def test_the_tables_are_divided_into_groups_of_like_metrics():
+    """System carries three kinds in one table; Content two.
+
+    Without a rule between them they read as one undifferentiated list, and a
+    per-call rate sits flush against a per-question one.
+    """
+    import re
+    from agentic_eval.render import answer_comparison_html
+    rows = [{"system": s, "mode": "cold", "name": "q1", "run_index": 1,
+             "question": "q", "answer": "a", "claims": [], "fact_results": [],
+             # A judged rate above, or Claims is the first row and correctly
+             # opens no group.
+             "metrics": {"answer_correct": 1, "answer_checked": 1,
+                         "all_factual_claim_count": 4, "orthogonal_claim_count": 3,
+                         "grounded_count": 3}} for s in ("old", "new")]
+    page = answer_comparison_html(
+        rows, baseline="old", candidate="new",
+        summary={"groups": [
+            {"system": s, "mode": "cold", "name": "q1",
+             "completion_rate": 1.0, "tool_call_success_rate": 1.0,
+             "llm_call_count": {"mean": 7.0, "min": 7.0, "max": 7.0}}
+            for s in ("old", "new")
+        ]},
+    )
+    # Alternating bands: the judged rates are plain, the claim-based group
+    # is banded. Same on System — per-question plain, per-call banded, cost
+    # plain again.
+    assert re.search(r'<tr class="gband"><td>(Total claims|Claims)</td>', page)
+    assert '<tr class="gband"><td>Tool-call success rate</td>' in page
+    assert '<tr><td>Completion rate</td>' in page          # first group, unbanded
+    assert re.search(r'<tr><td>(LLM calls|LLM calls mean)</td>', page)  # third
