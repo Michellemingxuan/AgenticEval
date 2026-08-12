@@ -36,13 +36,31 @@ from typing import Any
 _PAGE = 256
 
 
-def _post(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+def _send(
+    method: str, url: str, body: dict[str, Any], timeout: float,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method=method,
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read() or "{}")
+
+
+def _post(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+    return _send("POST", url, body, timeout)
+
+
+def _put(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Upsert. PUT, not POST.
+
+    `POST /collections/<c>/points` is Qdrant's RETRIEVE endpoint and rejects an
+    upsert body with `missing field \`ids\``. The mistake was invisible for as
+    long as every run began with an empty store: there was nothing to put back,
+    so this call never ran and every restore logged "reinstated 0". The first
+    run that started with real memories deleted them and then failed here.
+    """
+    return _send("PUT", url, body, timeout)
 
 
 def snapshot(
@@ -87,12 +105,17 @@ def restore(
         point["id"] for point in snapshot(url, collection, timeout=timeout)
     ]
     keep = {point["id"] for point in points}
-    remove = [point_id for point_id in current if point_id not in keep]
-    if remove:
-        _post(f"{base}/points/delete?wait=true", {"points": remove}, timeout)
-    missing = [point for point in points if point["id"] not in set(current)]
+    known = set(current)
+
+    # REINSTATE FIRST, delete second. If the put fails, nothing has been
+    # removed and the store is a superset of what it should hold — untidy but
+    # complete, and a second attempt fixes it. The other order destroys: a
+    # failed re-insert after a successful delete leaves the store missing
+    # memories that existed before the run and exist nowhere else. That is
+    # what happened, and it cost 22 of them.
+    missing = [point for point in points if point["id"] not in known]
     if missing:
-        _post(f"{base}/points?wait=true", {"points": [
+        _put(f"{base}/points?wait=true", {"points": [
             {
                 "id": point["id"],
                 "vector": point.get("vector"),
@@ -100,4 +123,18 @@ def restore(
             }
             for point in missing
         ]}, timeout)
+
+    remove = [point_id for point_id in current if point_id not in keep]
+    if remove:
+        _post(f"{base}/points/delete?wait=true", {"points": remove}, timeout)
+
+    # Say what the store actually holds now, rather than what was attempted.
+    # The caller reports this to a human who will not check.
+    after = {point["id"] for point in snapshot(url, collection, timeout=timeout)}
+    if after != keep:
+        raise RuntimeError(
+            f"restore did not land: {len(after)} point(s) in {collection}, "
+            f"expected {len(keep)}; "
+            f"{len(keep - after)} missing, {len(after - keep)} left over"
+        )
     return {"removed": len(remove), "reinstated": len(missing)}
