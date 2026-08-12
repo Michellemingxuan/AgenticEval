@@ -95,20 +95,18 @@ experiment:
     series_b: [b1_case_overview, b2_tsr_cdss_reaction,
                b3_bureau_during_reaction, b4_abnormal_transactions,
                b5_connected_transactions, b6_default_pattern,
-               b7_intent_verdict, b8_contradicting_evidence,
-               b9_model_opportunities_in_context]
+               b7_intent_verdict, b9_model_opportunities_in_context]
     series_c: [c1_report_spending_summary]
     series_d: [d1_model_opportunities_cold]
     # The pair the D series exists for: B9 and D1 are the same question, asked
-    # with and without the eight turns before it. They sit in different sets,
+    # with and without the seven turns before it. They sit in different sets,
     # so they run as two separate sessions and the contrast survives. B9 needs
     # its whole chain, which is why the series-B turns are all here.
     cold_vs_warm:
       questions: [b1_case_overview, b2_tsr_cdss_reaction,
                   b3_bureau_during_reaction, b4_abnormal_transactions,
                   b5_connected_transactions, b6_default_pattern,
-                  b7_intent_verdict, b8_contradicting_evidence,
-                  b9_model_opportunities_in_context,
+                  b7_intent_verdict, b9_model_opportunities_in_context,
                   d1_model_opportunities_cold]
 
 # Owned by AgenticEval, not by the system under test. Both halves of the
