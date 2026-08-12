@@ -20,6 +20,7 @@ from agentic_eval import memory_store
 from agentic_eval.content import evaluate_runs_file
 from agentic_eval.models import AdapterResult, RunRequest
 from agentic_eval.process import ManagedProcess, expand
+from agentic_eval.render import progress
 from agentic_eval.render.run_summary import comparison_markdown, write_blind_review
 from agentic_eval.layout import RunLayout
 from agentic_eval.scoring import aggregate, compare, score_content, score_memory
@@ -37,11 +38,12 @@ _DEFAULT_RETRY_OUTCOMES = ("timeout", "screen_timeout")
 class RetryPolicy:
     """When to ask again after a turn that produced nothing.
 
-    Deliberately NOT the same thing as `retry_count`/`retried` on a record:
-    those are the SYSTEM's own internal retries, read from its trace, and they
-    feed `retry_rate` — a measurement of the system under test. Conflating the
-    two would let the harness's recovery inflate a number that is supposed to
-    describe the subject.
+    Deliberately NOT the same thing as SELF-RECOVERY on a record. That is the
+    system fixing its own problem — a re-issued tool call, a re-run plan — read
+    from its trace and reported as `self_recovery_rate`, a measurement of the
+    subject. This is the evaluator asking again because the system produced
+    nothing at all. Mixing them would let our recovery inflate a number meant
+    to describe the system.
     """
 
     outcomes: frozenset[str] = frozenset(_DEFAULT_RETRY_OUTCOMES)
@@ -136,14 +138,65 @@ class ComparisonRunner:
         ]
         self.seed = int(experiment["seed"])
         self._retry = RetryPolicy.from_config(experiment.get("retry"))
+        # Everything written so far, so the progress page is a view of the
+        # run rather than a re-read of the file it is racing.
+        self._done: list[dict[str, Any]] = []
+        self._started_at = time.time()
         # Both guard shared state that concurrent workers touch. Interleaved
         # writes would corrupt runs.jsonl into unparseable half-lines.
+        # Set on interrupt; workers check it between turns.
+        self._stopping = threading.Event()
         self._write_lock = threading.Lock()
         self._print_lock = threading.Lock()
 
     def _persist(self, record: dict[str, Any]) -> None:
-        with self._write_lock, self.raw_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, default=str) + "\n")
+        with self._write_lock:
+            with self.raw_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, default=str) + "\n")
+            # Under the same lock, so the page can never describe a half-written
+            # runs.jsonl. `write` swallows its own errors: a progress page must
+            # not be able to fail a run.
+            self._done.append(record)
+            progress.write(
+                self.layout.progress, self._done,
+                plan=self._plan(), started_at=self._started_at,
+            )
+
+    def _plan(self) -> dict[str, Any]:
+        """The shape this run is aiming at, from the run itself.
+
+        Not from the config's raw numbers: a scoped run asks fewer questions
+        than the file lists, and a progress bar measuring against the config
+        would sit at 40% on a complete run.
+        """
+        questions = len(self.config.questions)
+        cases = len(self._cases)
+        repeats = int(self.config.experiment["repeats"])
+        systems = len(self.config.systems)
+        modes = 2 if self.config.experiment["mode"] == "both" else 1
+        return {
+            "questions": questions, "cases": cases, "repeats": repeats,
+            "systems": systems,
+            # Per set, because sets differ in length: series_b has eight
+            # questions and series_c one, so a shared denominator would put
+            # one of them at 800%.
+            "set_sizes": {
+                name: len(items) for name, items in self._question_sets()
+            },
+            # Series order, then position inside the series: the order the
+            # questions are ASKED. Without it a reader watching the grid sees
+            # rows reshuffle as workers finish.
+            "question_order": [
+                question.name
+                for _set, items in self._question_sets() for question in items
+            ],
+            "set_of": {
+                question.name: name
+                for name, items in self._question_sets() for question in items
+            },
+            "case_ids": [case for case in self._cases if case is not None],
+            "expected_records": questions * cases * repeats * systems * modes,
+        }
 
     def _order(self, key: tuple) -> list[str]:
         """System order for one session, shuffled deterministically.
@@ -250,8 +303,11 @@ class ComparisonRunner:
     ) -> list[dict[str, Any]]:
         """One system's whole turn of a session: rewind, then every question."""
         self._reset(system, session.case_id, worker)
-        return [
-            self._one(
+        records = []
+        for position, question in enumerate(session.questions, 1):
+            if self._stopping.is_set():
+                break
+            records.append(self._one(
                 system,
                 RunRequest(
                     question, session.run_index, session.mode,
@@ -261,9 +317,8 @@ class ComparisonRunner:
                     case_id=session.case_id,
                 ),
                 worker,
-            )
-            for position, question in enumerate(session.questions, 1)
-        ]
+            ))
+        return records
 
     def _run_session(self, session: Session, worker: int) -> list[dict[str, Any]]:
         """One session, both systems, questions in the configured order.
@@ -280,7 +335,7 @@ class ComparisonRunner:
         machine being busy, not the system being wrong, and leaving both rows
         in runs.jsonl would average an empty answer into latency and
         consistency as if the system had answered twice. What DID happen is
-        disclosed on the kept record — `harness_attempts` and the outcomes that
+        disclosed on the kept record — `evaluator_attempts` and the outcomes that
         forced them — so a run that limped is never silently indistinguishable
         from one that did not.
         """
@@ -307,11 +362,24 @@ class ComparisonRunner:
                 # retry re-enters the same congestion that caused the timeout.
                 time.sleep(self._retry.backoff_s)
             for record in pass_records:
-                record["harness_attempts"] = attempts
+                record["evaluator_attempts"] = attempts
+                # A boolean beside the count, so the rate can be read the same
+                # way as the system's own two — and so "no replay" is False
+                # rather than a missing key that averages as nothing.
+                record["evaluator_replayed"] = attempts > 1
                 if forced:
-                    record["harness_retry_outcomes"] = forced
+                    record["evaluator_replay_reasons"] = forced
                 self._persist(record)
             records.extend(pass_records)
+        # One grid per finished session: often enough to watch a long run,
+        # rare enough not to bury the per-answer lines. Under the print lock,
+        # so two workers cannot interleave halves of two grids.
+        with self._print_lock:
+            print(progress.terminal_report(
+                list(self._done), plan=self._plan(),
+                started_at=self._started_at,
+                order=[q.name for q in self.config.questions],
+            ))
         return records
 
     def _execute(self, mode: str) -> list[dict[str, Any]]:
@@ -341,11 +409,27 @@ class ComparisonRunner:
 
         def run_slot(worker: int) -> None:
             for index, session in enumerate(sessions):
+                if self._stopping.is_set():
+                    return
                 if owner[session.case_id] == worker:
                     results[index] = self._run_session(session, worker)
 
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+        # Not `with`: its __exit__ joins BEFORE any except clause runs, so a
+        # Ctrl-C would wait for every worker to finish its whole slice before
+        # the interrupt was even acknowledged. Setting the flag first lets each
+        # worker stop at its next turn boundary.
+        pool = ThreadPoolExecutor(max_workers=self.workers)
+        try:
             list(pool.map(run_slot, range(self.workers)))
+        except BaseException:
+            self._stopping.set()
+            print(
+                "  interrupted — finishing the turn in flight, then stopping. "
+                "runs.jsonl keeps every answer already recorded."
+            )
+            raise
+        finally:
+            pool.shutdown(wait=True)
         # Reassembled in session order, so runs.jsonl reads the same whatever
         # order the workers happened to finish in.
         return [record for group in results for record in group]

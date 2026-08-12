@@ -20,11 +20,23 @@ _MEASURED_TOOL = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _AUXILIARY = {"report_agent", "general_specialist"}
 
 
-def iter_sse(stream: BinaryIO) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Parse an SSE byte stream into ``(event, JSON payload)`` tuples."""
+def iter_sse(
+    stream: BinaryIO, *, deadline: float | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Parse an SSE byte stream into ``(event, JSON payload)`` tuples.
+
+    The deadline is enforced HERE, per line, not by the caller per event.
+    Heartbeats arrive as SSE comments (`: ping`) and are skipped below, so they
+    never reach a consumer — a caller checking the clock once per yielded event
+    therefore never checks it at all while a server dribbles keepalives. Each
+    read stays under the socket timeout, nothing raises, and the turn runs
+    unbounded: measured once at 34626s against a 600s limit.
+    """
     event = "message"
     data_lines: list[str] = []
     for raw in stream:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("SSE stream exceeded the turn deadline")
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         if not line:
             if data_lines:
@@ -377,7 +389,9 @@ def _event_fields(events: list[tuple[str, dict]]) -> dict[str, Any]:
 def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
     empty = {
         "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
-        "llm_call_count": None, "retry_count": None, "qa_cache_hit": None,
+        "llm_call_count": None, "self_recovery_count": None,
+        "self_recovery_tool_count": None, "self_recovery_orchestration_count": None,
+        "qa_cache_hit": None,
         "episodic_context_exposed": None, "case_summary_exposed": None,
         "memory_context_exposed": None, "memory_telemetry_complete": None,
         "memory_sources": [],
@@ -445,16 +459,33 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
     if total is None and prompt is not None and completion is not None:
         total = prompt + completion
 
-    retry_ids = {
+    # SELF-RECOVERY, counted at two levels. Both are the system noticing a
+    # problem and fixing it WITHOUT being asked again, so both are benign —
+    # what distinguishes them is cost and where the happy path broke:
+    #
+    #   tool           a re-issued call, an ungrounded answer sent back for
+    #                  evidence, a retaken planning step — inside one attempt
+    #   orchestration  the whole plan re-run for the same turn
+    #
+    # Neither is the same as the evaluator re-asking a question the system
+    # never answered; that is recorded by the runner, not read from here.
+    #
+    # They used to be reported only as one total, which made a system with a
+    # busy safety net indistinguishable from one re-planning every turn.
+    self_recovery_tool_count = len({
         int(row["id"]) for row in rows
         if str(row.get("node") or "").endswith(".retry")
         or _tags(row).intersection({"retry", "ungrounded_retry", "planning_timeout"})
-    }
+    })
     orch_attempts = sum(
         1 for row in rows
         if row.get("node") == "orchestrator" and int(row.get("depth") or 0) == 0
     )
-    retry_count = len(retry_ids) + max(0, orch_attempts - 1)
+    self_recovery_orchestration_count = max(0, orch_attempts - 1)
+    # Kept as the sum so runs recorded before the split still compare.
+    self_recovery_count = (
+        self_recovery_tool_count + self_recovery_orchestration_count
+    )
     qa_cache_hit = any(
         row.get("node") == "cache_replay"
         and ("tags" not in columns or "cache_hit" in _tags(row))
@@ -513,7 +544,9 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
         "completion_tokens": completion,
         "total_tokens": total,
         "llm_call_count": len(llm_rows),
-        "retry_count": retry_count,
+        "self_recovery_count": self_recovery_count,
+        "self_recovery_tool_count": self_recovery_tool_count,
+        "self_recovery_orchestration_count": self_recovery_orchestration_count,
         "qa_cache_hit": qa_cache_hit,
         "episodic_context_exposed": episodic_context_exposed,
         "case_summary_exposed": case_summary_exposed,
@@ -630,13 +663,16 @@ class AgenticSysSSEAdapter(SystemAdapter):
             with urllib.request.urlopen(
                 stream_request, timeout=min(timeout_s, 30),
             ) as response:
-                # The server emits a heartbeat, so this loop regains control
-                # periodically and can enforce the overall deadline.
+                # Belt and braces on top of urlopen's own timeout: bounds a
+                # single silent read. It does NOT bound the turn — a stream
+                # that keeps producing bytes satisfies it forever — which is
+                # why the deadline goes into `iter_sse` and is checked per
+                # line, heartbeat or not.
                 try:
                     response.fp.raw._sock.settimeout(min(30.0, timeout_s))  # type: ignore[attr-defined]
                 except (AttributeError, OSError):
                     pass
-                for event_name, event_payload in iter_sse(response):
+                for event_name, event_payload in iter_sse(response, deadline=deadline):
                     if time.monotonic() > deadline:
                         raise TimeoutError(f"turn {turn_id} exceeded {timeout_s}s")
                     if event_payload.get("turn_id") != turn_id:

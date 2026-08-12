@@ -34,17 +34,30 @@ class _Adapter:
 
 
 def _runner(tmp_path, adapter, attempts=2):
+    import threading
+
+    from agentic_eval.layout import RunLayout
+
     runner = ComparisonRunner.__new__(ComparisonRunner)
     runner.pool = [{"solo": adapter}]
     runner.workers = 1
-    runner.config = type("C", (), {"experiment": {"timeout_s": 10, "cases": ["c1"]}})()
-    runner.raw_path = tmp_path / "runs.jsonl"
+    runner.config = type("C", (), {
+        "experiment": {
+            "timeout_s": 10, "cases": ["c1"], "repeats": 1, "mode": "stateful",
+        },
+        "questions": [_Question("b2"), _Question("b3"), _Question("b4")],
+        "systems": {"solo": {}},
+    })()
+    runner.layout = RunLayout(tmp_path).ensure()
+    runner.raw_path = runner.layout.runs
     runner.raw_path.write_text("", encoding="utf-8")
-    import threading
     runner._write_lock, runner._print_lock = threading.Lock(), threading.Lock()
     runner._retry = RetryPolicy(
         outcomes=frozenset({"timeout"}), attempts=attempts, backoff_s=0.0,
     )
+    # `_persist` also keeps the live progress page current.
+    runner._done, runner._started_at = [], 0.0
+    runner._stopping = threading.Event()      # checked between turns
     runner._order = lambda key: ["solo"]
     return runner
 
@@ -87,15 +100,15 @@ def test_the_replay_is_disclosed_on_every_kept_record(tmp_path):
 
     rows = runner._run_session(_session(), 0)
 
-    assert all(r["harness_attempts"] == 2 for r in rows)
-    assert all(r["harness_retry_outcomes"] == ["timeout"] for r in rows)
+    assert all(r["evaluator_attempts"] == 2 for r in rows)
+    assert all(r["evaluator_replay_reasons"] == ["timeout"] for r in rows)
 
 
 def test_a_clean_pass_says_one_attempt_and_claims_no_retry(tmp_path):
     adapter = _Adapter(fail_on=set())
     rows = _runner(tmp_path, adapter)._run_session(_session(), 0)
-    assert all(r["harness_attempts"] == 1 for r in rows)
-    assert all("harness_retry_outcomes" not in r for r in rows)
+    assert all(r["evaluator_attempts"] == 1 for r in rows)
+    assert all("evaluator_replay_reasons" not in r for r in rows)
 
 
 def test_exhausted_attempts_keep_the_timeout_rather_than_hiding_it(tmp_path):
@@ -111,7 +124,7 @@ def test_exhausted_attempts_keep_the_timeout_rather_than_hiding_it(tmp_path):
     rows = runner._run_session(_session(), 0)
 
     assert [r["outcome"] for r in rows] == ["timeout"] * 3
-    assert all(r["harness_attempts"] == 2 for r in rows)   # tried twice, then kept
+    assert all(r["evaluator_attempts"] == 2 for r in rows)   # tried twice, then kept
     assert len([json.loads(l) for l in runner.raw_path.open()]) == 3
 
 
