@@ -45,7 +45,7 @@ def test_prose_that_says_it_found_nothing_counts_as_empty():
     assert toolcalls.outcome(
         "trend(max(derog_count) by month on month) = (no parseable month "
         "values; 26 total in bureau_data; 0 row(s) had unrecognized month format)"
-    ) == "empty"
+    ) == "failed"
 
 
 def test_an_unreadable_result_is_unknown_not_success():
@@ -64,7 +64,7 @@ def test_the_failures_the_tools_actually_emit_are_caught():
         "'derog_count' is not a column of 'bureau_data' for this case)",
         "File not found: payment_spend_exp_0.md",
     ):
-        assert toolcalls.outcome(text) == "empty", text[:40]
+        assert toolcalls.outcome(text) == "failed", text[:40]
 
 
 def test_a_batch_is_counted_per_spec():
@@ -83,7 +83,7 @@ def test_a_batch_is_counted_per_spec():
         ]},
     }
     assert toolcalls.counts([{"evidence": [batch]}]) == {
-        "data": 1, "empty": 2, "unknown": 0,
+        "data": 1, "failed": 2, "unknown": 0,
     }
 
 
@@ -97,7 +97,7 @@ def test_success_rate_reaches_the_system_section():
     group = aggregate(rows, modules=["latency"])["groups"][0]
     assert group["tool_call_success_rate"] == 0.5
     assert group["tool_calls_with_data"] == 2
-    assert group["tool_calls_empty"] == 2
+    assert group["tool_calls_failed"] == 2
     assert group["tool_calls_unreadable"] == 0
 
 
@@ -226,3 +226,36 @@ def test_an_ambiguous_alias_is_dropped_rather_than_guessed():
                                                        "rows_in_range": 1})
     row = _consistency_row("old", 1, [a, b])
     assert _learn_aliases(list(_calls(row))) == {}
+
+
+def test_a_call_that_ran_and_matched_nothing_is_a_success():
+    """The distinction the old name `empty` obscured.
+
+    Zero rows is an ANSWER — "no returned payments" is the truth about a1 —
+    so it must not be charged to the system as a failed call. Only a call that
+    could not run at all is a failure.
+    """
+    matched_nothing = {"rows": [], "row_count": 0, "scanned": 357}
+    assert toolcalls.outcome(matched_nothing) == "data"
+    assert toolcalls.outcome(json.dumps(matched_nothing)) == "data"
+
+    could_not_run = "COLUMN NOT FOUND: 'derog_count' is not a column"
+    assert toolcalls.outcome(could_not_run) == "failed"
+
+
+def test_the_success_rate_is_over_judged_calls_only():
+    """`unknown` is excluded from BOTH sides, not assumed good."""
+    from agentic_eval.dimensions.latency import section
+    record = {
+        "outcome": "ok", "elapsed_seconds": 1.0, "tools": [],
+        "evidence": [
+            {"source_type": "tool_result", "tool": "t", "result": {"rows": []}},
+            {"source_type": "tool_result", "tool": "t", "result": "COLUMN NOT FOUND: x"},
+            {"source_type": "tool_result", "tool": "t", "result": "some prose"},
+        ],
+    }
+    out = section([record])
+    assert out["tool_calls_with_data"] == 1
+    assert out["tool_calls_failed"] == 1
+    assert out["tool_calls_unreadable"] == 1
+    assert out["tool_call_success_rate"] == 0.5      # 1 / (1 + 1), not 1/3

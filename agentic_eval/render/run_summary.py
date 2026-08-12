@@ -25,7 +25,7 @@ def comparison_markdown(
         f"Baseline: `{baseline}` · Candidate: `{candidate}`",
         "",
         "Deltas are candidate minus baseline. Positive is desirable for quality/"
-        "consistency; negative is desirable for latency, tokens, calls, and retry.",
+        "consistency; negative is desirable for latency, tokens and calls. Self-recovery carries no direction — it is the system fixing itself, not failing.",
         "",
         "## Consistency across repeated runs",
         "",
@@ -82,7 +82,7 @@ def comparison_markdown(
         "",
         "| Mode | Question | Δ mean latency | Δ median | Δ p95 | Δ max | "
         "Δ outlier rate | Paired mean 95% CI | W/T/L | Δ tokens mean | "
-        "Δ tokens p95 | Δ LLM calls | Δ retry-run rate | Δ retries/run |",
+        "Δ tokens p95 | Δ LLM calls | Δ self-recovery rate | Δ recoveries/run |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ])
     for item in comparisons:
@@ -110,8 +110,8 @@ def comparison_markdown(
             f"{_fmt(delta['total_tokens_mean'], decimals=0)} | "
             f"{_fmt(delta['total_tokens_p95'], decimals=0)} | "
             f"{_fmt(delta['llm_call_count_mean'])} | "
-            f"{_fmt(delta['retry_rate'], percent=True)} | "
-            f"{_fmt(delta['retry_count_mean'])} |"
+            f"{_fmt(delta['self_recovery_rate'], percent=True)} | "
+            f"{_fmt(delta['self_recovery_count_mean'])} |"
         )
     lines.extend([
         "",

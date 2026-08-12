@@ -52,7 +52,7 @@ def test_trace_fields_extracts_optional_telemetry(tmp_path: Path):
     out = _trace_fields(str(db), "t1")
     assert out["total_tokens"] == 18
     assert out["llm_call_count"] == 2
-    assert out["retry_count"] == 1
+    assert out["self_recovery_count"] == 1
     assert out["kb_context_exposures"] == 1
 
 

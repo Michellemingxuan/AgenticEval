@@ -122,11 +122,14 @@ def aggregate_content_evaluations(
 #: different numbers for one metric.
 SET_RATIOS = (
     ("expected_answer_accuracy_rate", "answer_correct", "answer_checked"),
-    ("orthogonal_claim_count", "orthogonal_claim_count", "all_factual_claim_count"),
+    ("must_have_coverage", "must_have_coverage", "must_have_questions"),
+    # Claim counts are totals, not ratios — no denominator. `None` says so,
+    # and keeps this list in step with the viewer's spec.
+    ("all_claim_count", "all_factual_claim_count", None),
+    ("orthogonal_claim_count", "orthogonal_claim_count", None),
     ("grounded_rate", "grounded_count", "orthogonal_claim_count"),
     ("factual_grounded_rate", "factual_grounded_count", "orthogonal_claim_count"),
     ("report_grounded_rate", "report_grounded_count", "orthogonal_claim_count"),
-    ("must_have_coverage", "must_have_coverage", "must_have_questions"),
 )
 
 
@@ -165,11 +168,17 @@ def _set_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 float(item.get("metrics", {}).get(numerator) or 0)
                 for item in items
             )
-            bottom = sum(
+            # A count has no denominator: the total IS the value, and dividing
+            # it by anything would turn "106 claims" into a ratio nobody asked
+            # for.
+            bottom = None if denominator is None else sum(
                 float(item.get("metrics", {}).get(denominator) or 0)
                 for item in items
             )
-            result[label] = (top / bottom) if bottom else None
+            if denominator is None:
+                result[label] = top
+            else:
+                result[label] = (top / bottom) if bottom else None
             result[f"{label}_counts"] = {
                 "numerator": top, "denominator": bottom,
             }

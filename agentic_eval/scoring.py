@@ -145,9 +145,16 @@ def compare(
                 "llm_call_count_mean": delta(
                     c["llm_call_count_mean"], b["llm_call_count_mean"]
                 ),
-                "retry_rate": delta(c["retry_rate"], b["retry_rate"]),
-                "retry_count_mean": delta(
-                    c["retry_count"]["mean"], b["retry_count"]["mean"]
+                "self_recovery_rate": delta(
+                    c["self_recovery_rate"], b["self_recovery_rate"],
+                ),
+                "evaluator_replay_rate": delta(
+                    c.get("evaluator_replay_rate"),
+                    b.get("evaluator_replay_rate"),
+                ),
+                "self_recovery_count_mean": delta(
+                    c["self_recovery_count"]["mean"],
+                    b["self_recovery_count"]["mean"],
                 ),
                 "memory_hit_rate": delta(
                     c["memory_hit_rate"], b["memory_hit_rate"]
@@ -191,7 +198,13 @@ def _paired_metrics(
         pair for pair in pairs.values() if baseline in pair and candidate in pair
     ]
 
-    def metric(field: str, *, lower_is_better: bool) -> dict[str, Any]:
+    def metric(field: str, *, lower_is_better: bool | None = None) -> dict[str, Any]:
+        """`lower_is_better=None` means the direction carries no verdict.
+
+        Self-recovery is the system fixing itself; more of it is not a loss and
+        less of it is not a win. Counting wins on it would report a stable
+        system as beating one whose safety net simply fires more often.
+        """
         deltas = []
         for pair in complete:
             left, right = pair[baseline].get(field), pair[candidate].get(field)
@@ -203,12 +216,15 @@ def _paired_metrics(
                 "bootstrap_95ci_mean": None, "candidate_wins": 0,
                 "ties": 0, "candidate_losses": 0,
             }
-        wins = sum(
-            delta < 0 if lower_is_better else delta > 0 for delta in deltas
-        )
-        losses = sum(
-            delta > 0 if lower_is_better else delta < 0 for delta in deltas
-        )
+        if lower_is_better is None:
+            wins = losses = 0          # reported, never scored
+        else:
+            wins = sum(
+                delta < 0 if lower_is_better else delta > 0 for delta in deltas
+            )
+            losses = sum(
+                delta > 0 if lower_is_better else delta < 0 for delta in deltas
+            )
         stable_offset = sum(ord(char) for char in f"{mode}:{name}:{field}")
         rng = random.Random(seed + stable_offset)
         boot = [
@@ -231,7 +247,9 @@ def _paired_metrics(
         "elapsed_seconds": metric("elapsed_seconds", lower_is_better=True),
         "total_tokens": metric("total_tokens", lower_is_better=True),
         "llm_call_count": metric("llm_call_count", lower_is_better=True),
-        "retry_count": metric("retry_count", lower_is_better=True),
+        # Benign, so no direction: a system that recovers and then
+        # answers has worked. Reported to show what an answer cost.
+        "self_recovery_count": metric("self_recovery_count"),
         "automated_content_score": metric(
             "automated_content_score", lower_is_better=False,
         ),

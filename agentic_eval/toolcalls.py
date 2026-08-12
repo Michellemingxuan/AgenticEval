@@ -56,7 +56,11 @@ def payload(value: Any) -> dict[str, Any] | None:
 
 
 def outcome(result: Any) -> str:
-    """`data`, `empty`, or `unknown` — did the call RUN?
+    """`data`, `failed`, or `unknown` — did the call RUN?
+
+    The middle one was called `empty`, which read as "ran and found nothing"
+    — the opposite of what it holds. Finding nothing is `data`: the call ran
+    and zero is its answer. `failed` is a call that could not run at all.
 
     Not "did it find rows". A query that scanned 357 payments and matched none
     ran perfectly: zero returned payments is the true answer to "did the
@@ -73,7 +77,7 @@ def outcome(result: Any) -> str:
     if not text:
         return "unknown"
     if any(mark in text for mark in _FAILURE_PROSE):
-        return "empty"
+        return "failed"
     # Prose that reports something (a file's contents, a KB topic) — it ran,
     # but nothing here counts what it found.
     return "unknown"
@@ -83,7 +87,7 @@ def iter_results(record: dict[str, Any]):
     """Every tool result in a record, batch calls yielded one spec at a time.
 
     A batch reports per-spec outcomes in `results`, so counting the batch as
-    one call would hide that three of its four specs came back empty.
+    one call would hide that three of its four specs never ran.
     """
     for item in record.get("evidence") or []:
         if item.get("source_type") not in {"tool_result", "unclassified_tool_result"}:
@@ -105,7 +109,9 @@ def iter_results(record: dict[str, Any]):
 
 def counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     """How many tool calls across these runs returned data, nothing, or unknown."""
-    tally = {"data": 0, "empty": 0, "unknown": 0}
+    # `failed` means the call could not RUN. A call that ran and matched no
+    # rows is `data` — zero is a measurement, not a failure.
+    tally = {"data": 0, "failed": 0, "unknown": 0}
     for record in rows:
         for _tool, _column, result in iter_results(record):
             tally[outcome(result)] += 1

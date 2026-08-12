@@ -7,7 +7,7 @@ def _row(system, run_index, latency, tokens):
         "outcome": "ok", "elapsed_seconds": latency,
         "team_unique": ["modeling"], "tools": ["summarize_trend"],
         "subqueries": {"modeling": "check tsr trend"},
-        "total_tokens": tokens, "llm_call_count": 3, "retried": False,
+        "total_tokens": tokens, "llm_call_count": 3, "self_recovered": False,
         "qa_cache_hit": False, "kb_context_exposures": 0,
         "kb_lookup_calls": None, "kb_lookup_hits": None,
         "provenance_completeness": 1.0, "automated_content_score": 90,
@@ -61,8 +61,8 @@ def test_repeated_run_distributions_outliers_retries_and_tool_arguments():
         row.update({
             "prompt_tokens": 80 + run_index,
             "completion_tokens": 20,
-            "retry_count": 2 if run_index == 5 else 0,
-            "retried": run_index == 5,
+            "self_recovery_count": 2 if run_index == 5 else 0,
+            "self_recovered": run_index == 5,
             "evidence": [{
                 "source_type": "tool_result", "tool": "summarize_trend",
                 "arguments": {"period": "June" if run_index == 5 else "May"},
@@ -77,10 +77,10 @@ def test_repeated_run_distributions_outliers_retries_and_tool_arguments():
     assert group["latency_seconds"]["outlier_count"] == 1
     assert group["latency_seconds"]["outlier_rate"] == 0.2
     assert group["total_tokens"]["n"] == 5
-    assert group["retry_rate"] == 0.2
-    assert group["retry_run_count"] == 1
-    assert group["retry_attempt_count"] == 2
-    assert group["retry_count"]["mean"] == 0.4
+    assert group["self_recovery_rate"] == 0.2
+    assert group["self_recovery_runs"] == 1
+    assert group["self_recovery_attempts"] == 2
+    assert group["self_recovery_count"]["mean"] == 0.4
     # Tool-name usage is identical, but normalized tool-call arguments expose
     # the one run that queried the wrong period.
     assert group["tool_exact_consistency"] == 1.0
