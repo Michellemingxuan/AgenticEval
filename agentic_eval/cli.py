@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from agentic_eval import envfile
@@ -382,6 +383,17 @@ def main() -> None:
         "--resume", action="store_true",
         help="append only answers not already present in content/evaluations.jsonl",
     )
+    progress_parser = subparsers.add_parser(
+        "progress", help="print how far a run has got, while it is still going",
+    )
+    progress_parser.add_argument(
+        "--run", required=True, type=Path,
+        help="the run folder (or its runs.jsonl)",
+    )
+    progress_parser.add_argument(
+        "--watch", type=float, default=None, metavar="SECONDS",
+        help="reprint every N seconds until the run finishes",
+    )
     walkthrough_parser = subparsers.add_parser(
         "walkthrough",
         help="render answer -> atomic facts -> numeric verdicts as markdown",
@@ -429,6 +441,32 @@ def main() -> None:
         # stderr: `validate` writes JSON that `bin/compare` parses.
         print(f"env: {path} ({applied} variable(s) set)", file=sys.stderr)
 
+    if args.command == "progress":
+        from agentic_eval.render import progress as progress_render
+
+        start = args.run.expanduser().resolve()
+        layout = RunLayout.find(start) or RunLayout(
+            start if start.is_dir() else start.parent
+        )
+        # The plan is written beside the page during the run; manifest.json
+        # only exists once the run has finished, which is exactly when this
+        # command is least needed.
+        state_path = layout.progress.with_suffix(".json")
+        state = (
+            json.loads(state_path.read_text(encoding="utf-8"))
+            if state_path.is_file() else {}
+        )
+        while True:
+            records = read_jsonl(layout.runs) if layout.runs.is_file() else []
+            print(progress_render.terminal_report(
+                records, plan=state.get("plan") or {},
+                started_at=state.get("started_at"),
+            ))
+            expected = int((state.get("plan") or {}).get("expected_records") or 0)
+            if not args.watch or (expected and len(records) >= expected):
+                return
+            time.sleep(max(1.0, float(args.watch)))
+        return
     if args.command == "compare-answers":
         path = args.evaluations.expanduser().resolve()
         layout = RunLayout(args.output_dir.expanduser().resolve()) if args.output_dir \

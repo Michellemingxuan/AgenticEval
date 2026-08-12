@@ -79,6 +79,16 @@ class RunLayout:
     def answer_comparison(self) -> Path:
         return self.content_dir / "answer_comparison.html"
 
+    @property
+    def progress(self) -> Path:
+        """Live progress, rewritten as each answer lands.
+
+        In `content/` beside the viewer rather than at the root: it is a page
+        you open in a browser, and it is the one artifact that exists mainly
+        while the run is still going.
+        """
+        return self.content_dir / "progress.html"
+
     # -- human review. The two phases sit side by side rather than in separate
     #    folders: they are independently blinded but joined on `turn_id`, and
     #    keeping the keys adjacent is what makes that obvious.
