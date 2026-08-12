@@ -33,7 +33,9 @@
 #   bin/compare --config experiments/configs/series_abcd.yaml \
 #               --question-scope series_b
 #
-# Re-judge answers already on disk, starting no system at all:
+# Finish (or redo) the judging on a run already on disk, starting no system at
+# all. This RESUMES: answers already judged are kept and only the missing ones
+# cost anything, so an interrupted pass is cheap to complete.
 #
 #   bin/compare --config experiments/configs/series_abcd.yaml --skip-run \
 #               --runs experiments/results/<run>/runs.jsonl
@@ -136,7 +138,17 @@ else
 fi
 
 echo "== score answers"
-"${EVAL[@]}" evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT" | tail -1
+# --resume when working on a run that already exists. Judging is the expensive
+# half — hundreds of calls against a slow gateway — and a pass that died at
+# answer 180 should cost minutes to finish, not another full spend. On a fresh
+# run the directory is empty, so it changes nothing there.
+#
+# NOT passed after a fresh run: `evaluate-content` would then have nothing to
+# resume anyway, and leaving it off keeps re-judging from scratch available by
+# re-invoking with --skip-run absent.
+SCORE=(evaluate-content --config "$CONFIG" --runs "$OUT/runs.jsonl" --output-dir "$OUT")
+(( SKIP_RUN )) && SCORE+=(--resume)
+"${EVAL[@]}" "${SCORE[@]}" | tail -1
 
 cat <<EOF
 

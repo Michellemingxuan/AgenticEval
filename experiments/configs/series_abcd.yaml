@@ -18,6 +18,24 @@ experiment:
   mode: stateful
   repeats: 3
   timeout_s: 600
+
+  # A turn that timed out produced NO answer, so recording it as the system's
+  # verdict measures the machine's traffic rather than the system's reasoning.
+  # Retry re-asks it — but by replaying the whole pass, because recovery starts
+  # with `/rewind`, which clears the case: a lone re-ask would drop a follow-up
+  # into an empty session, where "the reacting period" has no referent and the
+  # vague answer that follows is charged to the system.
+  #
+  # `error` and `out_of_scope` are deliberately NOT here. Those ARE the
+  # system's behaviour, and re-rolling them until they look better would be
+  # measuring persistence rather than quality.
+  #
+  # The wait matters as much as the retry: an immediate second attempt
+  # re-enters the same congestion that caused the first timeout.
+  retry:
+    outcomes: [timeout, screen_timeout]
+    attempts: 2
+    backoff_s: 30
   seed: 20260802
   output_dir: ../results
 

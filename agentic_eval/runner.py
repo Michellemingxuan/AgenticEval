@@ -25,6 +25,57 @@ from agentic_eval.layout import RunLayout
 from agentic_eval.scoring import aggregate, compare, score_content, score_memory
 
 
+#: Outcomes worth asking again. A timeout under load says nothing about the
+#: answer — the system never produced one — so recording it as the system's
+#: verdict measures the machine's traffic, not its reasoning. Everything else
+#: (`error`, `out_of_scope`, a wrong answer) IS the system's behaviour and is
+#: kept exactly as it happened.
+_DEFAULT_RETRY_OUTCOMES = ("timeout", "screen_timeout")
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """When to ask again after a turn that produced nothing.
+
+    Deliberately NOT the same thing as `retry_count`/`retried` on a record:
+    those are the SYSTEM's own internal retries, read from its trace, and they
+    feed `retry_rate` — a measurement of the system under test. Conflating the
+    two would let the harness's recovery inflate a number that is supposed to
+    describe the subject.
+    """
+
+    outcomes: frozenset[str] = frozenset(_DEFAULT_RETRY_OUTCOMES)
+    attempts: int = 0          # extra attempts after the first; 0 disables
+    backoff_s: float = 30.0
+
+    @classmethod
+    def from_config(cls, raw: Any) -> "RetryPolicy":
+        if not raw:
+            return cls(attempts=0)
+        if not isinstance(raw, dict):
+            raise ValueError("experiment.retry must be a mapping")
+        unknown = set(raw) - {"outcomes", "attempts", "backoff_s"}
+        if unknown:
+            raise ValueError(
+                f"experiment.retry sets unknown key(s) {sorted(unknown)}; "
+                "it may set outcomes, attempts, backoff_s"
+            )
+        return cls(
+            outcomes=frozenset(
+                str(name) for name in (raw.get("outcomes") or _DEFAULT_RETRY_OUTCOMES)
+            ),
+            attempts=max(0, int(raw.get("attempts", 0))),
+            backoff_s=max(0.0, float(raw.get("backoff_s", 30.0))),
+        )
+
+    def triggered_by(self, records: list[dict[str, Any]]) -> list[str]:
+        """Which of these records asked to be retried, in order."""
+        return [
+            str(record.get("outcome")) for record in records
+            if str(record.get("outcome")) in self.outcomes
+        ]
+
+
 @dataclass(frozen=True)
 class Session:
     """One conversation: a case, a question set, and a repeat of it.
@@ -84,6 +135,7 @@ class ComparisonRunner:
             for name, target in systems.items() if target.get("process")
         ]
         self.seed = int(experiment["seed"])
+        self._retry = RetryPolicy.from_config(experiment.get("retry"))
         # Both guard shared state that concurrent workers touch. Interleaved
         # writes would corrupt runs.jsonl into unparseable half-lines.
         self._write_lock = threading.Lock()
@@ -125,7 +177,11 @@ class ComparisonRunner:
         record = result.to_record(system=system, request=request)
         record.update(score_memory(record))
         record.update(score_content(record))
-        self._persist(record)
+        # NOT persisted here. A system pass that gets retried must not leave
+        # its abandoned attempt in runs.jsonl: every consumer assumes one row
+        # per (system, case, set, repeat, question), and a duplicate would be
+        # averaged into latency and consistency as though the system had
+        # answered twice. `_run_session` writes the attempt it keeps.
         case = (
             f"  [{describe_case(request.case_id)}]"
             if len(self._cases) > 1 else ""
@@ -189,23 +245,73 @@ class ComparisonRunner:
             for run_index in repeats
         ]
 
+    def _system_pass(
+        self, session: Session, system: str, worker: int,
+    ) -> list[dict[str, Any]]:
+        """One system's whole turn of a session: rewind, then every question."""
+        self._reset(system, session.case_id, worker)
+        return [
+            self._one(
+                system,
+                RunRequest(
+                    question, session.run_index, session.mode,
+                    # Cold turns are not a conversation, so they carry no
+                    # position — the same as before sessions existed.
+                    position if session.mode == "stateful" else None,
+                    case_id=session.case_id,
+                ),
+                worker,
+            )
+            for position, question in enumerate(session.questions, 1)
+        ]
+
     def _run_session(self, session: Session, worker: int) -> list[dict[str, Any]]:
-        """One session, both systems, questions in the configured order."""
+        """One session, both systems, questions in the configured order.
+
+        A turn that timed out is retried by REPLAYING THE WHOLE PASS, not by
+        asking that one question again. Recovery starts with `/rewind`, which
+        clears the case — memory, trace rows, conversation — so a re-ask on its
+        own would put a follow-up in an empty session: b3 would ask about "the
+        reacting period" that b2 never established, and answer something vague
+        that every metric then reads as the system's fault. In cold mode a pass
+        is a single turn anyway, so the two are the same thing there.
+
+        The abandoned attempt is dropped rather than recorded. A timeout is the
+        machine being busy, not the system being wrong, and leaving both rows
+        in runs.jsonl would average an empty answer into latency and
+        consistency as if the system had answered twice. What DID happen is
+        disclosed on the kept record — `harness_attempts` and the outcomes that
+        forced them — so a run that limped is never silently indistinguishable
+        from one that did not.
+        """
         records = []
         for system in self._order(session.key):
-            self._reset(system, session.case_id, worker)
-            for position, question in enumerate(session.questions, 1):
-                records.append(self._one(
-                    system,
-                    RunRequest(
-                        question, session.run_index, session.mode,
-                        # Cold turns are not a conversation, so they carry no
-                        # position — the same as before sessions existed.
-                        position if session.mode == "stateful" else None,
-                        case_id=session.case_id,
-                    ),
-                    worker,
-                ))
+            attempts, forced = 0, []
+            while True:
+                attempts += 1
+                pass_records = self._system_pass(session, system, worker)
+                triggered = self._retry.triggered_by(pass_records)
+                if not triggered or attempts > self._retry.attempts:
+                    break
+                forced.extend(triggered)
+                with self._print_lock:
+                    print(
+                        f"  {'w' + str(worker) + ' ' if self.workers > 1 else ''}"
+                        f"{system:<14} {'/'.join(sorted(set(triggered))):<12} "
+                        f"replaying {describe_case(session.case_id)} "
+                        f"{session.question_set} #{session.run_index} "
+                        f"({attempts}/{self._retry.attempts + 1}) "
+                        f"after {self._retry.backoff_s:.0f}s"
+                    )
+                # Traffic, most likely. Waiting is the point: an immediate
+                # retry re-enters the same congestion that caused the timeout.
+                time.sleep(self._retry.backoff_s)
+            for record in pass_records:
+                record["harness_attempts"] = attempts
+                if forced:
+                    record["harness_retry_outcomes"] = forced
+                self._persist(record)
+            records.extend(pass_records)
         return records
 
     def _execute(self, mode: str) -> list[dict[str, Any]]:
@@ -391,6 +497,14 @@ class ComparisonRunner:
             # per system shared one machine, so the numbers are comparable
             # within the run but not against a serial one.
             "latency_measured_concurrently": self.workers > 1,
+            # What the harness was allowed to re-ask, and on what. A reader
+            # comparing two runs needs to know whether one of them was given
+            # second chances the other was not.
+            "retry_policy": {
+                "outcomes": sorted(self._retry.outcomes),
+                "attempts": self._retry.attempts,
+                "backoff_s": self._retry.backoff_s,
+            },
             # Each set is a separate session in stateful mode, so this records
             # how the conversation was actually cut up.
             "question_sets": {
