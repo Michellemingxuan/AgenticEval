@@ -77,12 +77,19 @@ def _dig(source: dict[str, Any], key: str) -> Any:
 #:            against each other by construction, so a signed change on each
 #:            reads as two findings when there is one
 _CONTENT_METRICS = (
+    # The two judged rates first — they are the answer's quality. Then the
+    # claim counts they were computed over, then where those claims are
+    # grounded. Reading order matches the question a reader arrives with:
+    # was it right, did it cover the rubric, and on what evidence.
     ("answer_correct", "answer_checked", "Accuracy", True, "macro"),
-    ("orthogonal_claim_count", "all_factual_claim_count", "Orthogonal claims", True, "count"),
+    ("must_have_coverage", "must_have_questions", "Must-have hit rate", True, "macro"),
+    # Plain totals: the claim counts are sums, not fractions of anything, and
+    # "73 (out of 80)" invited reading orthogonality as a rate.
+    ("all_factual_claim_count", None, "Total claims", None, "total"),
+    ("orthogonal_claim_count", None, "Total orthogonal claims", True, "total"),
     ("grounded_count", "orthogonal_claim_count", "Grounded", True, "rate"),
     ("factual_grounded_count", "orthogonal_claim_count", "· factual grounded", True, "part"),
     ("report_grounded_count", "orthogonal_claim_count", "· report grounded", True, "part"),
-    ("must_have_coverage", "must_have_questions", "Must-have hit rate", True, "macro"),
 )
 
 # Memory leverage was here and is gone. Its denominator counted memory SOURCES
@@ -102,16 +109,57 @@ _MODULE_METRICS = {
         ("memory_required_question_count", "Memory-required questions", True, "count"),
     ),
     "latency": (
-        # Success first: a fast, cheap answer built on calls that returned
-        # nothing is not a better answer.
-        ("tool_call_success_rate", "Tool-call success", True, "pct"),
-        ("tool_calls_empty", "· calls that failed", False, "count"),
+        # The three recovery-and-reliability rates FIRST and together, because
+        # they answer one question in three steps and are misread apart:
+        #
+        #   tool-call success   per CALL — did the tool run at all
+        #   self-recovery       per TURN — the system fixed itself, answer exists
+        #   evaluator replay    per TURN — no answer existed and WE asked again
+        #
+        # Different units, so they are never to be compared to each other; the
+        # note under the table says so. Ordered by how bad the news is: a
+        # failed call is recoverable, a replay means nothing came back.
+        # Outcome first, then how much work it took, then where the work went.
+        # Completion is the anchor: the three rows under it describe effort,
+        # and effort only means something once you know an answer arrived.
+        #
+        # The unit is carried by the DENOMINATOR each aggregate rate prints
+        # — "100% (3 questions)" — the same convention Content uses, rather
+        # than a "— per turn" suffix repeated on every label.
+        ("completion_rate", "Completion rate", True, "pct"),
+        ("self_recovery_rate", "Self-recovery rate", None, "pct"),
+        ("self_recovery_tool_rate", "· tool level", None, "pct"),
+        ("self_recovery_orchestration_rate", "· orchestration level", None, "pct"),
+        ("evaluator_replay_rate", "Evaluator replays rate", False, "pct"),
+        ("tool_call_success_rate", "Tool-call success rate", True, "pct"),
+        ("tool_calls_failed", "· total failed calls", False, "count"),
+        # Means, not sums: each question's mean over its repeats and cases,
+        # then the mean over questions. That makes a k=3 two-case run
+        # comparable to a k=1 single-case one instead of six times larger —
+        # a total answers "what did this run cost", not "what does an answer
+        # cost", and only the second compares two systems.
+        ("llm_call_count.mean", "LLM calls mean", False, "num"),
+        ("total_tokens.mean", "Tokens mean", False, "num"),
         ("latency_seconds.mean", "Latency mean", False, "sec"),
-        ("total_tokens.mean", "Total tokens", False, "num"),
-        ("llm_call_count.mean", "LLM calls", False, "num"),
-        ("retry_rate", "Retry rate", False, "pct"),
     ),
 }
+
+#: Always rendered in the System block, even when a run never recorded them —
+#: as `–`, not dropped. These three are the reliability story, and a MISSING
+#: "Evaluator replays" row reads exactly like a zero: the reader concludes
+#: nothing was ever replayed, when in truth nothing was ever measured.
+_ALWAYS_SHOWN = {
+    "tool_call_success_rate", "self_recovery_rate", "evaluator_replay_rate",
+}
+
+#: The one row per block that prints "(N questions)". Every rate in a block
+#: averages over the same questions, so repeating the count on each row is
+#: noise; and on a rate whose denominator is CALLS rather than questions it
+#: would name the wrong thing entirely.
+_COUNT_SHOWN_ON = {
+    "completion_rate", "team_pairwise_jaccard", "memory_hit_rate",
+}
+
 
 #: Per-question overrides. Exposure rates describe how a system behaves across
 #: a session, so at one question they are noise; what a single question can
@@ -156,12 +204,29 @@ def _delta_cell(
     change = float(candidate) - float(baseline)
     if abs(change) < 1e-9:
         return '<td class="delta">·</td>'
-    good = (change > 0) == higher_is_better
+    # One decimal, kept only when it says something. Rounding to whole units
+    # turned a mean of 7 -> 7.6 into "+1", which reads as a whole extra call
+    # per answer when the difference is 0.6; and 58% -> 100% is +42.4, not +42.
+    def _trim(value: float, group: str = "") -> str:
+        # A decimal past three digits is noise: "+49,004.3 tokens" says
+        # nothing "+49,004" does not. Below that it is often the whole
+        # finding, so it stays.
+        places = 1 if abs(value) < 100 else 0
+        text = f"{value:+,.{places}f}" if group else f"{value:+.{places}f}"
+        return text.rstrip("0").rstrip(".") if "." in text else text
+
     shown = (
-        f"{100 * change:+.0f}%" if kind == "pct"
-        else f"{change:+.1f}" if kind == "sec"
-        else f"{change:+,.0f}"
+        _trim(100 * change) + "%" if kind == "pct"
+        else _trim(change) if kind == "sec"
+        else _trim(change, group=",")
     )
+    # `None` means the direction carries no verdict — a tool retry is a
+    # mechanism working, and painting more of them red would editorialise.
+    # `(change > 0) == None` is always False, so without this branch every
+    # such delta would render as a regression.
+    if higher_is_better is None:
+        return f'<td class="delta">{shown}</td>'
+    good = (change > 0) == higher_is_better
     return f'<td class="delta {"up" if good else "down"}">{shown}</td>'
 
 
@@ -174,7 +239,7 @@ def _module_table(
     rows = list(extra_rows or [])
     for key, label, higher_is_better, kind in spec:
         base_value, cand_value = _dig(base_group, key), _dig(cand_group, key)
-        if base_value is None and cand_value is None:
+        if base_value is None and cand_value is None and key not in _ALWAYS_SHOWN:
             continue
         rows.append(
             f"<tr><td>{html.escape(label)}</td>"
@@ -551,8 +616,12 @@ def _content_rows(
         cells, values = [], []
         for runs in (base_runs, cand_runs):
             numerator = _totals(runs, numerator_key)
-            denominator = _totals(runs, denominator_key)
-            if numerator is None or not denominator:
+            # A "total" row has no denominator by design, so an absent one is
+            # not the "nothing to divide by" case the guard below is for.
+            denominator = (
+                None if denominator_key is None else _totals(runs, denominator_key)
+            )
+            if numerator is None or (style != "total" and not denominator):
                 cells.append("—")
                 values.append(None)
                 continue
@@ -585,11 +654,19 @@ def _content_rows(
                     f"{'' if n_questions == 1 else 's'})" if aggregate else ""
                 )
                 cells.append(f"{percent}%{shown}")
+            elif style == "total":
+                # Summed across questions. No denominator: these are counts,
+                # and "(out of 80)" read as though orthogonality were a rate.
+                values.append(numerator)
+                cells.append(shown_n)
             elif style == "count":
                 # A claim count is compared as a count: "+55 claims" is the
                 # finding, and a percentage of a moving denominator hides it.
                 values.append(numerator)
                 cells.append(f"{shown_n} (out of {_fmt_value(denominator, 'count')})")
+            elif numerator is None or denominator is None:
+                values.append(None)
+                cells.append("—")
             else:
                 values.append(numerator / denominator)
                 cells.append(
@@ -602,7 +679,7 @@ def _content_rows(
             '<td class="delta"></td>' if style == "part"
             else _delta_cell(
                 values[0], values[1], higher_is_better,
-                "num" if style == "count" else "pct",
+                "num" if style in {"count", "total"} else "pct",
             )
         )
         rows.append(
@@ -732,8 +809,8 @@ def _summary_block(
             return None
         return sum(values) if kind == "count" else _mean(values)
 
-    def module_value(system: str, key: str, kind: str) -> float | None:
-        return combine([
+    def module_values(system: str, key: str) -> list[float]:
+        return [
             float(value)
             for (group_system, group_mode, name), group in groups.items()
             if group_system == system
@@ -742,7 +819,10 @@ def _summary_block(
             # the same aggregation to one series without a second code path.
             and (questions is None or name in questions)
             and (value := _dig(group, key)) is not None
-        ], kind)
+        ]
+
+    def module_value(system: str, key: str, kind: str) -> float | None:
+        return combine(module_values(system, key), kind)
 
     blocks = []
     # A module with nothing to report still gets a block explaining why — but
@@ -770,20 +850,47 @@ def _summary_block(
         ("Memory", _MODULE_METRICS["memory"], module_value,
          f"macro average over questions, all repeats{over_cases}"),
         ("System", _MODULE_METRICS["latency"], module_value,
-         f"macro average over questions, all repeats{over_cases}"),
+         f"macro average over questions, all repeats{over_cases}. "
+         "Read each row on its own — the units differ. "
+         "<b>Completion</b> — turns where an answer arrived (a reasoned "
+         "refusal counts; a timeout does not) &nbsp;·&nbsp; "
+         "<b>self-recovery</b> — turns where the system fixed itself and still "
+         "answered &nbsp;·&nbsp; <b>evaluator replays</b> — turns that returned "
+         "nothing, so the harness asked again; whether that worked is in "
+         "Completion above &nbsp;·&nbsp; <b>tool-call success</b> — of the "
+         "calls we can judge, how many RAN (matching zero rows is a success; "
+         "not running is not). Only the kept attempt is counted: a replayed "
+         "turn contributes its final pass, never the abandoned one"),
     ):
-        rows = []
+        rows, real = [], False
         for key, label, higher_is_better, kind in spec:
             base_value = reader(baseline, key, kind)
             cand_value = reader(candidate, key, kind)
-            if base_value is None and cand_value is None:
+            missing = base_value is None and cand_value is None
+            if missing and key not in _ALWAYS_SHOWN:
                 continue
+            # A placeholder row is not evidence that anything was measured.
+            # Counting it as such built an "overview" for a run with no
+            # records at all — the emptiness is the finding there.
+            real = real or not missing
+            # The question count rides on the FIRST rate only. Every rate in
+            # a block averages over the same questions, so repeating it on
+            # each row is noise — and on a row whose denominator is calls
+            # rather than questions it is simply wrong.
+            def shown(system: str, value: Any) -> str:
+                text = _fmt_value(value, kind)
+                if kind != "pct" or value is None or key not in _COUNT_SHOWN_ON:
+                    return text
+                count = len(module_values(system, key))
+                return f"{text} ({count} question{'' if count == 1 else 's'})"
             rows.append(
                 f"<tr><td>{html.escape(label)}</td>"
-                f'<td class="num">{_fmt_value(base_value, kind)}</td>'
-                f'<td class="num">{_fmt_value(cand_value, kind)}</td>'
+                f'<td class="num">{shown(baseline, base_value)}</td>'
+                f'<td class="num">{shown(candidate, cand_value)}</td>'
                 f"{_delta_cell(base_value, cand_value, higher_is_better, kind)}</tr>"
             )
+        if not real:
+            rows = []
         measured = measured or bool(rows)
         if not rows:
             # Dropping the block entirely reads as "this module was not part of

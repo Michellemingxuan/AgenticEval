@@ -201,10 +201,10 @@ def test_metrics_tab_has_all_four_eval_modules():
     summary = {"groups": [
         _summary_group("old", "q1", team_exact_consistency=1.0,
                        latency_seconds={"mean": 20.0, "p95": 25.0},
-                       memory_hit_rate=0.5, retry_rate=0.0),
+                       memory_hit_rate=0.5, self_recovery_rate=0.0),
         _summary_group("new", "q1", team_exact_consistency=0.8,
                        latency_seconds={"mean": 30.0, "p95": 40.0},
-                       memory_hit_rate=1.0, retry_rate=0.1),
+                       memory_hit_rate=1.0, self_recovery_rate=0.1),
     ]}
     page = answer_comparison_html(
         rows, baseline="old", candidate="new", summary=summary,
@@ -214,7 +214,7 @@ def test_metrics_tab_has_all_four_eval_modules():
     assert "20.0s" in page and "30.0s" in page      # dotted key resolved
     assert "Memory hit rate" in page
     # Slower is worse, more memory hits is better.
-    assert 'class="delta down">+10.0' in page
+    assert 'class="delta down">+10' in page
     assert 'class="delta up">+50' in page
 
 
@@ -226,8 +226,8 @@ def test_module_metrics_are_labelled_as_spanning_all_repeats():
     """
     rows = [_evaluation("old", "q1", 1, "A"), _evaluation("new", "q1", 1, "B")]
     summary = {"groups": [
-        _summary_group("old", "q1", retry_rate=0.0),
-        _summary_group("new", "q1", retry_rate=0.0),
+        _summary_group("old", "q1", self_recovery_rate=0.0),
+        _summary_group("new", "q1", self_recovery_rate=0.0),
     ]}
     page = answer_comparison_html(
         rows, baseline="old", candidate="new", summary=summary,
@@ -290,11 +290,11 @@ def test_run_summary_is_not_confused_with_the_content_summary(tmp_path):
     )
     (run / "metrics" / "summary.json").write_text(
         json.dumps({"groups": [
-            {"system": "new", "mode": "cold", "name": "q1", "retry_rate": 0.25},
+            {"system": "new", "mode": "cold", "name": "q1", "self_recovery_rate": 0.25},
         ]}), encoding="utf-8",
     )
     summary = find_run_summary(run / "content" / "evaluations.jsonl")
-    assert summary["groups"][0]["retry_rate"] == 0.25
+    assert summary["groups"][0]["self_recovery_rate"] == 0.25
 
 
 def test_pre_migration_runs_still_resolve_their_summary(tmp_path):
@@ -305,11 +305,11 @@ def test_pre_migration_runs_still_resolve_their_summary(tmp_path):
     (run / "content").mkdir(parents=True)
     (run / "runs.jsonl").write_text("", encoding="utf-8")
     (run / "summary.json").write_text(
-        json.dumps({"groups": [{"system": "new", "name": "q1", "retry_rate": 0.5}]}),
+        json.dumps({"groups": [{"system": "new", "name": "q1", "self_recovery_rate": 0.5}]}),
         encoding="utf-8",
     )
     assert find_run_summary(run / "content" / "evaluations.jsonl")["groups"][0][
-        "retry_rate"
+        "self_recovery_rate"
     ] == 0.5
 
 
@@ -465,7 +465,7 @@ def test_judge_error_is_not_shown_as_a_metric_but_claims_stay_marked():
     page = answer_comparison_html(rows, baseline="old", candidate="new")
     assert "Judge error" not in page
     assert "could not be mapped" not in page
-    assert "Orthogonal claims" in page
+    assert "Total orthogonal claims" in page
 
 
 def test_modules_are_ordered_with_memory_before_system():
