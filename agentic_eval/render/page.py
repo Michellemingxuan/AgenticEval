@@ -128,6 +128,7 @@ _MODULE_METRICS = {
         # than a "— per turn" suffix repeated on every label.
         ("completion_rate", "Completion rate", True, "pct"),
         ("self_recovery_rate", "Self-recovery rate", None, "pct"),
+        ("self_recovery_call_rate", "· call level", None, "pct"),
         ("self_recovery_tool_rate", "· tool level", None, "pct"),
         ("self_recovery_orchestration_rate", "· orchestration level", None, "pct"),
         ("evaluator_replay_rate", "Evaluator replays rate", False, "pct"),

@@ -77,6 +77,9 @@ def section(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # call and then answers correctly has succeeded. What it measures is
         # how often the happy path missed, and how much the answer cost.
         #
+        #   call           the transport abandoned a stalled LLM call and
+        #                  re-issued it — below the tool level, and the
+        #                  specialist never knew
         #   tool           inside one attempt: a re-issued call, an ungrounded
         #                  answer sent back for evidence, a retaken plan step
         #   orchestration  the whole plan re-run for the same turn
@@ -84,6 +87,7 @@ def section(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # `None` on runs that never recorded it, rather than 0 — "not
         # measured" and "never happened" must not read alike.
         "self_recovery_rate": _optional_rate(rows, "self_recovered"),
+        "self_recovery_call_rate": _optional_rate(rows, "self_recovered_call"),
         "self_recovery_tool_rate": _optional_rate(rows, "self_recovered_tool"),
         "self_recovery_orchestration_rate": _optional_rate(
             rows, "self_recovered_orchestration",

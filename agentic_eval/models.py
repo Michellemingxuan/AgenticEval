@@ -44,7 +44,12 @@ class RunRequest:
 #:   4  question_set — which set the turn belongs to. Sets are separate
 #:      sessions, so a run before this bump asked every set in one
 #:      conversation and its cold-ask questions were not cold
-RECORD_SCHEMA = 5
+#:   5  self-recovery split into tool and orchestration levels, where one
+#:      summed `retry_count` had hidden which of the two a version changed
+#:   6  self_recovery_call_count — the transport re-issuing a stalled LLM
+#:      call. Recorded nowhere before, so an earlier run cannot say whether
+#:      it happened and must not read as zero
+RECORD_SCHEMA = 6
 
 
 @dataclass
@@ -74,6 +79,9 @@ class AdapterResult:
     #: Total self-recovery for the turn: tool level plus orchestration
     #: level. Was `retry_count`.
     self_recovery_count: int | None = None
+    #: The TRANSPORT abandoned a stalled LLM call and re-issued it. Below the
+    #: tool level: the specialist never knew, and the answer is unaffected.
+    self_recovery_call_count: int | None = None
     #: Recovery INSIDE one attempt at the question — a re-issued tool call, an
     #: ungrounded answer sent back for evidence, a retaken planning step. A
     #: designed mechanism, not a fault.
@@ -108,7 +116,9 @@ class AdapterResult:
         if self.self_recovery_count is not None:
             return self.self_recovery_count
         levels = [
-            self.self_recovery_tool_count, self.self_recovery_orchestration_count,
+            self.self_recovery_call_count,
+            self.self_recovery_tool_count,
+            self.self_recovery_orchestration_count,
         ]
         if all(level is None for level in levels):
             return None
@@ -157,6 +167,11 @@ class AdapterResult:
             "self_recovered": (
                 total > 0
                 if (total := self._self_recovery_total()) is not None else None
+            ),
+            "self_recovery_call_count": self.self_recovery_call_count,
+            "self_recovered_call": (
+                self.self_recovery_call_count > 0
+                if self.self_recovery_call_count is not None else None
             ),
             "self_recovery_tool_count": self.self_recovery_tool_count,
             "self_recovered_tool": (

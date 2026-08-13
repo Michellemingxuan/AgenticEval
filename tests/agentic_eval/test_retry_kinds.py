@@ -351,3 +351,64 @@ def test_the_tables_are_divided_into_groups_of_like_metrics():
     assert '<tr class="gband"><td>Tool-call success rate</td>' in page
     assert '<tr><td>Completion rate</td>' in page          # first group, unbanded
     assert re.search(r'<tr><td>(LLM calls|LLM calls mean)</td>', page)  # third
+
+
+def _trace_row(row_id, node="specialist.round_1", depth=1, tags=()):
+    import json as _json
+    return {"id": row_id, "node": node, "depth": depth, "parent_id": None,
+            "tags": _json.dumps(list(tags))}
+
+
+def test_a_stalled_call_that_was_re_issued_counts_at_the_call_level():
+    """AgenticSys tags the round when the transport re-issues a stalled call.
+
+    Exact tag matching: `stall_retry` is NOT `retry`. They are different
+    mechanisms at different layers, and pooling them would hide which one a
+    version actually changed.
+    """
+    from agentic_eval.adapters.agenticsys_sse import _tags
+    tags = {"stall_retry", "stall_retry_failed"}
+
+    assert _tags(_trace_row(1, tags=["stall_retry"])) & tags
+    # The failed re-issue still FIRED, so it is still an attempt.
+    assert _tags(_trace_row(2, tags=["stall_retry_failed"])) & tags
+    # And it must not be mistaken for the tool-level mechanism.
+    assert not _tags(_trace_row(3, tags=["stall_retry"])) & {
+        "retry", "ungrounded_retry", "planning_timeout",
+    }
+
+
+def test_the_three_levels_are_reported_apart_and_roll_up():
+    from agentic_eval.dimensions.latency import section
+    rows = [
+        _record(self_recovered=True, self_recovered_call=True,
+                self_recovered_tool=False, self_recovered_orchestration=False,
+                self_recovery_count=2),
+        _record(self_recovered=False, self_recovered_call=False,
+                self_recovered_tool=False, self_recovered_orchestration=False,
+                self_recovery_count=0),
+    ]
+    out = section(rows)
+    assert out["self_recovery_call_rate"] == 0.5
+    assert out["self_recovery_tool_rate"] == 0.0
+    assert out["self_recovery_rate"] == 0.5          # the rollup sees it
+
+
+def test_a_run_recorded_before_the_call_level_reads_unmeasured():
+    """Absent must not be zero: an older run cannot say whether it stalled."""
+    from agentic_eval.dimensions.latency import section
+    out = section([_record(retried=True, retry_count=1)])
+    assert out["self_recovery_call_rate"] is None
+    assert out["self_recovery_rate"] == 1.0          # the old field still reads
+
+
+def test_the_rollup_counts_a_call_level_recovery_on_its_own():
+    from agentic_eval.models import AdapterResult
+    record = AdapterResult(
+        outcome="ok", self_recovery_call_count=3,
+        self_recovery_tool_count=0, self_recovery_orchestration_count=0,
+    ).to_record(system="s", request=_request())
+    assert record["self_recovery_call_count"] == 3
+    assert record["self_recovered_call"] is True
+    assert record["self_recovery_count"] == 3
+    assert record["self_recovered"] is True

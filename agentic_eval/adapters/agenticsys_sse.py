@@ -390,6 +390,7 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
     empty = {
         "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
         "llm_call_count": None, "self_recovery_count": None,
+        "self_recovery_call_count": None,
         "self_recovery_tool_count": None, "self_recovery_orchestration_count": None,
         "qa_cache_hit": None,
         "episodic_context_exposed": None, "case_summary_exposed": None,
@@ -459,19 +460,33 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
     if total is None and prompt is not None and completion is not None:
         total = prompt + completion
 
-    # SELF-RECOVERY, counted at two levels. Both are the system noticing a
-    # problem and fixing it WITHOUT being asked again, so both are benign —
+    # SELF-RECOVERY, counted at three levels. All are the system noticing a
+    # problem and fixing it WITHOUT being asked again, so all are benign —
     # what distinguishes them is cost and where the happy path broke:
     #
+    #   call           the TRANSPORT abandoned a stalled LLM call and
+    #                  re-issued it. Tagged `stall_retry`, or
+    #                  `stall_retry_failed` when the re-issue also timed out —
+    #                  which still fired, so it still counts as an attempt.
     #   tool           a re-issued call, an ungrounded answer sent back for
     #                  evidence, a retaken planning step — inside one attempt
     #   orchestration  the whole plan re-run for the same turn
     #
-    # Neither is the same as the evaluator re-asking a question the system
-    # never answered; that is recorded by the runner, not read from here.
+    # Exact tag matching, so `stall_retry` is NOT `retry`: they are different
+    # mechanisms at different layers and pooling them would hide which one a
+    # version actually changed.
     #
-    # They used to be reported only as one total, which made a system with a
-    # busy safety net indistinguishable from one re-planning every turn.
+    # Counted per ROW, and the tag lands on the round, so two stalls inside
+    # one round read as one. That under-reports rather than inventing, which
+    # is the right direction for a count nobody can re-derive later.
+    #
+    # Neither is the evaluator re-asking a question the system never answered;
+    # that is recorded by the runner, not read from here.
+    self_recovery_call_count = len({
+        int(row["id"]) for row in rows
+        if _tags(row).intersection({"stall_retry", "stall_retry_failed"})
+    })
+
     self_recovery_tool_count = len({
         int(row["id"]) for row in rows
         if str(row.get("node") or "").endswith(".retry")
@@ -484,7 +499,9 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
     self_recovery_orchestration_count = max(0, orch_attempts - 1)
     # Kept as the sum so runs recorded before the split still compare.
     self_recovery_count = (
-        self_recovery_tool_count + self_recovery_orchestration_count
+        self_recovery_call_count
+        + self_recovery_tool_count
+        + self_recovery_orchestration_count
     )
     qa_cache_hit = any(
         row.get("node") == "cache_replay"
@@ -545,6 +562,7 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
         "total_tokens": total,
         "llm_call_count": len(llm_rows),
         "self_recovery_count": self_recovery_count,
+        "self_recovery_call_count": self_recovery_call_count,
         "self_recovery_tool_count": self_recovery_tool_count,
         "self_recovery_orchestration_count": self_recovery_orchestration_count,
         "qa_cache_hit": qa_cache_hit,
