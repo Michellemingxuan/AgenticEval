@@ -1625,7 +1625,7 @@ aside h2 {
   margin: 0 0 8px 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--faint);
 }
-.toc { list-style: none; margin: 0; padding: 0; counter-reset: q; }
+.toc { list-style: none; margin: 0; padding: 0; }
 .toc-flat { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .toc-flat > li > a::before { content: "◈"; color: var(--blue); }
 .subtoc { list-style: none; margin: 0 0 4px; padding: 0 0 0 18px; }
@@ -1636,9 +1636,14 @@ aside h2 {
   display: flex; gap: 8px; align-items: baseline; padding: 6px 9px;
   border-radius: 5px; text-decoration: none; color: var(--ink);
 }
+/* No `content` here on purpose: a bare question link gets no marker, so the
+   pseudo-element is not generated at all. This rule exists to style the ones
+   that DO set content — `◈` on the flat list, `·` in a sub-list. It used to
+   print a running counter, which numbered the questions in the nav for no
+   reason a reader could act on. */
 .toc a::before {
-  counter-increment: q; content: counter(q); color: var(--faint);
-  font-size: 11px; font-variant-numeric: tabular-nums; min-width: 11px;
+  color: var(--faint); font-size: 11px;
+  font-variant-numeric: tabular-nums; min-width: 11px;
 }
 .toc a:hover { background: var(--wash); }
 .toc a.active { background: var(--blue-wash); }
