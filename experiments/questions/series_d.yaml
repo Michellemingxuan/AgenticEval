@@ -2,12 +2,12 @@ version: 1
 
 # SERIES D — discovery, asked cold.
 #
-# One question, and it is the SAME question as B9. That is the point.
+# One question, and it is the SAME question as B8. That is the point.
 #
-# B9 lands after eight turns: the reaction window is established, the
+# B8 lands after seven turns: the reaction window is established, the
 # transaction pattern is named, an intent verdict is on the record. D1 asks it
 # with none of that. The pair isolates what the conversation was worth — a
-# system that answers D1 as well as B9 was not using the context, and one that
+# system that answers D1 as well as B8 was not using the context, and one that
 # answers D1 far worse has a memory story to tell rather than a reasoning one.
 #
 # Not marked `memory_required`: there is nothing to remember. Run it in its own

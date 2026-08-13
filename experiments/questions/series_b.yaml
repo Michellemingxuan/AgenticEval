@@ -281,7 +281,7 @@ questions:
             "explainable" from the routine, recurring nature of the spend is
             sound, and an argument that reaches "intentional" from the same
             observation without saying what rules the other two out is not.
-  - name: b9_model_opportunities_in_context
+  - name: b8_model_opportunities_in_context
     question: "Any model opportunities?"
     memory_required: true
     relation:

@@ -25,7 +25,7 @@ experiment:
 # complex ones only a rubric can. `--question` selects a subset without
 # needing a second config.
 # Series D alone, and deliberately NOT alongside B. D1 is the same question as
-# B9 asked with no conversation behind it; sharing a session would leak the
+# B8 asked with no conversation behind it; sharing a session would leak the
 # eight turns of context the pair exists to contrast.
 questions_file:
   - ../questions/series_d.yaml

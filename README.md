@@ -155,16 +155,16 @@ answering different questions while the report still calls it a comparison.
 
 The working suite is
 [`experiments/configs/series_abcd.yaml`](experiments/configs/series_abcd.yaml)
-— **18 questions in four sets**, each set its own file and its own session:
+— **17 questions in four sets**, each set its own file and its own session:
 
 | set | questions | settled by |
 |---|---|---|
 | `series_a` | 7 | an oracle script — no judge is consulted |
-| `series_b` | 9 | a rubric, as one nine-turn conversation |
+| `series_b` | 8 | a rubric, as one eight-turn conversation |
 | `series_c` | 1 | a rubric: summarise the report, or say there is none |
 | `series_d` | 1 | series B's last question, asked cold |
 
-At the config's `repeats: 3` over two cases that is 216 records for two
+At the config's `repeats: 3` over two cases that is 204 records for two
 systems. [`questions/simple.yaml`](experiments/questions/simple.yaml) is a
 smaller six-question oracle-only suite, run with
 `--config experiments/configs/simple_questions.yaml`.
@@ -440,7 +440,7 @@ bin/compare --config experiments/configs/series_abcd.yaml --question-scope serie
 | k, cases, workers | pinned | **from the config** |
 | for | spending little | measuring a subset |
 
-`series_abcd.yaml` defines `series_a`…`series_d` and `cold_vs_warm` (B9 and D1
+`series_abcd.yaml` defines `series_a`…`series_d` and `cold_vs_warm` (B8 and D1
 — the same question with and without the eight turns before it, in two sets so
 they stay two sessions). A question scope carrying `repeats` or `cases` is
 refused rather than honoured: changing k there would hand back rates that look
@@ -508,7 +508,7 @@ section per set alongside the overall one.
 
 This is what makes `series_d` work. D1 asks series B's final question ("Any
 model opportunities?") with none of B's context — run in one flat session it
-followed B9, the identical question, two turns later, so it measured the QA
+followed B8, the identical question, two turns later, so it measured the QA
 cache rather than cold discovery. As separate sets, D1 is turn 1 of its own
 conversation, and the judge's prior-turn context stops at the set boundary too.
 
