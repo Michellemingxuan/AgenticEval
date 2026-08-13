@@ -383,6 +383,18 @@ def main() -> None:
         "--resume", action="store_true",
         help="append only answers not already present in content/evaluations.jsonl",
     )
+    merge_parser = subparsers.add_parser(
+        "merge",
+        help="join runs that covered different cases into one run folder",
+    )
+    merge_parser.add_argument(
+        "--runs", required=True, nargs="+", type=Path, metavar="RUN",
+        help="two or more runs.jsonl files, or the folders holding them",
+    )
+    merge_parser.add_argument(
+        "--output-dir", required=True, type=Path,
+        help="new run folder to write; must not already exist",
+    )
     progress_parser = subparsers.add_parser(
         "progress", help="print how far a run has got, while it is still going",
     )
@@ -440,6 +452,32 @@ def main() -> None:
         path, applied = loaded
         # stderr: `validate` writes JSON that `bin/compare` parses.
         print(f"env: {path} ({applied} variable(s) set)", file=sys.stderr)
+
+    if args.command == "merge":
+        from agentic_eval import merge as merge_runs
+
+        sources = [merge_runs.read_run(path.expanduser().resolve())
+                   for path in args.runs]
+        records, manifest = merge_runs.merge(sources)
+        out = args.output_dir.expanduser().resolve()
+        # Refuse an existing folder: merging into one that already holds a
+        # runs.jsonl is the duplicate problem again, one level up.
+        layout = RunLayout(out)
+        if layout.runs.exists():
+            raise ValueError(f"{layout.runs} already exists; pick a new folder")
+        layout.ensure()
+        layout.runs.write_text(
+            "".join(json.dumps(r, default=str) + "\n" for r in records),
+            encoding="utf-8",
+        )
+        layout.manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(
+            f"Merged {len(sources)} run(s) into {layout.runs}\n"
+            f"  {len(records)} records over case(s): "
+            + ", ".join(describe_case(c) for c in manifest.get("cases") or [])
+            + "\n  next: agentic-eval rescore --runs " + str(layout.runs)
+        )
+        return
 
     if args.command == "progress":
         from agentic_eval.render import progress as progress_render
