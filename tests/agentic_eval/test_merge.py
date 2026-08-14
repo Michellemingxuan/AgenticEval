@@ -84,3 +84,42 @@ def test_the_same_case_may_appear_with_different_questions():
 def test_merging_nothing_is_an_error():
     with pytest.raises(ValueError, match="nothing to merge"):
         merge([])
+
+
+def test_a_run_that_died_partway_is_still_readable(tmp_path):
+    """The manifest is written BEFORE the first turn, not after the last.
+
+    A crashed run used to leave answers with no manifest beside them, so
+    nothing downstream could say which system was the baseline: `rescore`
+    refused, `merge` could not check the two runs matched, and the viewer
+    would have inferred the roles backwards.
+    """
+    import json
+    from agentic_eval.layout import RunLayout
+    from agentic_eval.merge import read_run
+
+    # What a killed run leaves: a manifest with n_records null, and whatever
+    # answers had been appended.
+    layout = RunLayout(tmp_path).ensure()
+    layout.manifest.write_text(json.dumps({
+        "baseline": "previous", "candidate": "current", "mode": "stateful",
+        "n_records": None,
+    }), encoding="utf-8")
+    layout.runs.write_text(json.dumps(_record("366")) + "\n", encoding="utf-8")
+
+    records, manifest = read_run(tmp_path)
+
+    assert len(records) == 1
+    assert manifest["baseline"] == "previous"
+    # And it can be joined with the run that finishes the job.
+    merged, joined = merge([(records, manifest), ([_record("118")], manifest)])
+    assert len(merged) == 2 and joined["cases"] == ["118", "366"]
+
+
+def test_an_unfinished_run_says_so():
+    """`n_records: null` distinguishes "died" from "ran and found nothing"."""
+    unfinished = {"baseline": "a", "candidate": "b", "mode": "cold",
+                  "n_records": None}
+    finished = {**unfinished, "n_records": 32}
+    assert unfinished["n_records"] is None
+    assert finished["n_records"] == 32

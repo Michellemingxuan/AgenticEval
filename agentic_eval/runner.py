@@ -472,8 +472,75 @@ class ComparisonRunner:
             "collection": expand(config.get("collection") or "amem_memories"),
         }
 
+    def _manifest(self, n_records: int | None) -> dict[str, Any]:
+        """What the run WAS ASKED to do, plus how much of it landed.
+
+        Written before the first turn and again at the end. Everything here
+        except `n_records` is known up front, and a run that dies partway
+        used to leave answers with no manifest beside them — so nothing
+        downstream could say which system was the baseline, and the records
+        were unreadable by `rescore`, `merge` and the viewer alike.
+        """
+        return {
+            "config": str(self.config.path),
+            "baseline": self.config.experiment["baseline"],
+            "candidate": self.config.experiment["candidate"],
+            "seed": self.config.experiment["seed"],
+            "mode": self.config.experiment["mode"],
+            "repeats": self.config.experiment["repeats"],
+            "cases": self._cases,
+            "workers": self.workers,
+            # Latency was measured under contention when this is > 1: N servers
+            # per system shared one machine, so the numbers are comparable
+            # within the run but not against a serial one.
+            "latency_measured_concurrently": self.workers > 1,
+            # What the harness was allowed to re-ask, and on what. A reader
+            # comparing two runs needs to know whether one of them was given
+            # second chances the other was not.
+            "retry_policy": {
+                "outcomes": sorted(self._retry.outcomes),
+                "attempts": self._retry.attempts,
+                "backoff_s": self._retry.backoff_s,
+            },
+            # Each set is a separate session in stateful mode, so this records
+            # how the conversation was actually cut up.
+            "question_sets": {
+                name: [question.name for question in questions]
+                for name, questions in self._question_sets()
+            },
+            "question_count": len(self.config.questions),
+            "n_records": n_records,
+            "content_evaluation": {
+                "enabled": self.config.content_evaluation.get("enabled"),
+                "auto_run": self.config.content_evaluation.get("auto_run"),
+                "judge_model": (self.config.content_evaluation.get("llm") or {}).get("model"),
+            },
+            "memory_evaluation": {
+                "annotated_questions": [
+                    question.name for question in self.config.questions
+                    if question.evaluation.get("memory_required") is not None
+                ],
+                "required_questions": [
+                    question.name for question in self.config.questions
+                    if question.evaluation.get("memory_required") is True
+                ],
+            },
+            "systems": {
+                name: self._system_manifest(name, target)
+                for name, target in self.config.systems.items()
+            },
+        }
+
     def run(self) -> Path:
         records: list[dict[str, Any]] = []
+        # Up front, so a run that dies partway leaves answers that can still be
+        # read: `rescore` needs the baseline/candidate roles, `merge` needs
+        # them to refuse joining two different experiments, and the viewer
+        # needs them or it infers the roles backwards. Rewritten at the end
+        # with the real count; `n_records: null` means it never finished.
+        self.layout.manifest.write_text(
+            json.dumps(self._manifest(None), indent=2), encoding="utf-8",
+        )
         # Snapshot BEFORE anything starts. A store that cannot be read is
         # reported and left alone — "no snapshot" must never be mistaken for
         # "snapshot of nothing", or a failed read would authorise wiping it.
@@ -568,55 +635,7 @@ class ComparisonRunner:
                     for question in self.config.questions
                 },
             )
-        manifest = {
-            "config": str(self.config.path),
-            "baseline": self.config.experiment["baseline"],
-            "candidate": self.config.experiment["candidate"],
-            "seed": self.config.experiment["seed"],
-            "mode": self.config.experiment["mode"],
-            "repeats": self.config.experiment["repeats"],
-            "cases": self._cases,
-            "workers": self.workers,
-            # Latency was measured under contention when this is > 1: N servers
-            # per system shared one machine, so the numbers are comparable
-            # within the run but not against a serial one.
-            "latency_measured_concurrently": self.workers > 1,
-            # What the harness was allowed to re-ask, and on what. A reader
-            # comparing two runs needs to know whether one of them was given
-            # second chances the other was not.
-            "retry_policy": {
-                "outcomes": sorted(self._retry.outcomes),
-                "attempts": self._retry.attempts,
-                "backoff_s": self._retry.backoff_s,
-            },
-            # Each set is a separate session in stateful mode, so this records
-            # how the conversation was actually cut up.
-            "question_sets": {
-                name: [question.name for question in questions]
-                for name, questions in self._question_sets()
-            },
-            "question_count": len(self.config.questions),
-            "n_records": len(records),
-            "content_evaluation": {
-                "enabled": self.config.content_evaluation.get("enabled"),
-                "auto_run": self.config.content_evaluation.get("auto_run"),
-                "judge_model": (self.config.content_evaluation.get("llm") or {}).get("model"),
-            },
-            "memory_evaluation": {
-                "annotated_questions": [
-                    question.name for question in self.config.questions
-                    if question.evaluation.get("memory_required") is not None
-                ],
-                "required_questions": [
-                    question.name for question in self.config.questions
-                    if question.evaluation.get("memory_required") is True
-                ],
-            },
-            "systems": {
-                name: self._system_manifest(name, target)
-                for name, target in self.config.systems.items()
-            },
-        }
+        manifest = self._manifest(len(records))
         self.layout.manifest.write_text(
             json.dumps(manifest, indent=2), encoding="utf-8",
         )

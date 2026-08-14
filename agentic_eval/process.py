@@ -65,8 +65,16 @@ class ManagedProcess:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        deadline = time.monotonic() + float(self.config.get("startup_timeout_s", 180))
+        budget = float(self.config.get("startup_timeout_s", 180))
+        started_at = time.monotonic()
+        deadline = started_at + budget
+        # Say what is being waited for. A server can legitimately take minutes
+        # to boot — the private environment acquires a gateway token at import
+        # — and the wait used to be entirely silent, so "still starting" and
+        # "wedged" looked identical for up to `startup_timeout_s`.
+        print(f"  starting {self.name} (up to {budget:.0f}s) — {log_path}")
         last_error: Exception | None = None
+        announced = 0.0
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError(
@@ -75,9 +83,20 @@ class ManagedProcess:
                 )
             try:
                 healthcheck()
+                print(
+                    f"  {self.name} answered after "
+                    f"{time.monotonic() - started_at:.0f}s"
+                )
                 return
             except Exception as exc:  # target is still booting
                 last_error = exc
+                waited = time.monotonic() - started_at
+                if waited - announced >= 15:
+                    announced = waited
+                    print(
+                        f"  {self.name} not answering yet ({waited:.0f}s of "
+                        f"{budget:.0f}s) — {type(exc).__name__}"
+                    )
                 time.sleep(1)
         raise RuntimeError(
             f"{self.name} did not become healthy; see {log_path}. Last error: "
