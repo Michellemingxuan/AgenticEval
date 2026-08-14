@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import Any
 
 from agentic_eval.common.stats import _percentile
+from agentic_eval.models import ANSWERED_OUTCOMES
 from agentic_eval.dimensions import EVAL_MODULES, memory, resolve_modules
 from agentic_eval.dimensions.content import score_content
 from agentic_eval.dimensions.memory import score_memory
@@ -49,7 +50,7 @@ def aggregate(
             "name": name,
             "n_runs": len(rows),
             "completion_rate": sum(
-                row.get("outcome") in {"ok", "out_of_scope"} for row in rows
+                row.get("outcome") in ANSWERED_OUTCOMES for row in rows
             ) / len(rows),
         }
         for module_name in selected:

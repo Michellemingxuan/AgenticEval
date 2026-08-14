@@ -24,9 +24,11 @@ import time
 from typing import Any
 
 from agentic_eval.cases import describe_case
+from agentic_eval.models import ANSWERED_OUTCOMES
 
-#: Outcomes that are not a failure. Everything else shows red.
-_GOOD = {"ok", "qa_cache_hit"}
+#: Outcomes that are not a failure. `out_of_scope` is a correct answer to an
+#: off-domain question, so a refusal must not show red in the grid.
+_GOOD = set(ANSWERED_OUTCOMES) | {"qa_cache_hit"}
 
 #: Seconds between browser refreshes. Short enough to feel live on a run whose
 #: turns take a minute, long enough not to fight a reader scrolling the table.
@@ -69,10 +71,13 @@ def summarize(
         for record in records:
             name = record.get(key)
             label = "—" if name is None else str(name)
-            slot = out.setdefault(label, {"done": 0, "ok": 0})
+            slot = out.setdefault(label, {"done": 0, "answered": 0})
             slot["done"] += 1
-            if record.get("outcome") == "ok":
-                slot["ok"] += 1
+            # ANSWERED, not "ok": a refusal to an off-domain question is a
+            # correct answer, and counting it against the row made the system
+            # look worse the better it behaved.
+            if str(record.get("outcome")) in _GOOD:
+                slot["answered"] += 1
         return out
 
     # `is not None`, not truthiness: a start time of 0.0 is a real timestamp
@@ -254,7 +259,7 @@ def _table(title: str, rows: dict[str, dict[str, int]], per: Any) -> str:
     body = "".join(
         f"<tr><td class=\"k\">{html.escape(describe_case(label))}</td>"
         f"<td class=\"p\">{_bar(slot['done'], int(total_for(label) or 0))}</td>"
-        f"<td class=\"m\">{slot['ok']}/{slot['done']} ok</td></tr>"
+        f"<td class=\"m\">{slot['answered']}/{slot['done']} answered</td></tr>"
         for label, slot in sorted(rows.items())
     )
     return f'<section><h2>{html.escape(title)}</h2><table>{body}</table></section>'
@@ -269,7 +274,7 @@ def render(state: dict[str, Any]) -> str:
     questions = max(1, int(plan.get("questions") or 1))
 
     outcomes = " · ".join(
-        f'<b class="{"bad" if name not in {"ok", "qa_cache_hit"} else "good"}">'
+        f'<b class="{"bad" if name not in _GOOD else "good"}">'
         f"{html.escape(name)}</b> {count}"
         for name, count in sorted(state.get("outcomes", {}).items())
     ) or "nothing recorded yet"
@@ -300,6 +305,39 @@ def render(state: dict[str, Any]) -> str:
         + _table("By system", state.get("by_system", {}), questions * repeats * cases)
         + _table("By question", state.get("by_question", {}), systems * repeats * cases),
     ).replace("{{STAMP}}", time.strftime("%H:%M:%S"))
+
+
+def plan_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """The run's shape, recovered from its manifest.
+
+    `progress.json` is written as a run goes, so a run that finished before
+    this module existed — or one killed before its first record landed — has
+    no plan beside it and every denominator reads "?". The manifest holds the
+    same facts, so a finished run can still be described exactly.
+    """
+    sets = dict(manifest.get("question_sets") or {})
+    cases = [c for c in (manifest.get("cases") or []) if c is not None]
+    questions = int(manifest.get("question_count") or sum(
+        len(names) for names in sets.values()
+    ) or 0)
+    systems = len(manifest.get("systems") or {}) or 2
+    repeats = int(manifest.get("repeats") or 1)
+    modes = 2 if manifest.get("mode") == "both" else 1
+    return {
+        "questions": questions,
+        "cases": len(cases) or 1,
+        "repeats": repeats,
+        "systems": systems,
+        "case_ids": [str(case) for case in cases],
+        "set_sizes": {name: len(names) for name, names in sets.items()},
+        "question_order": [name for names in sets.values() for name in names],
+        "set_of": {
+            name: set_name for set_name, names in sets.items() for name in names
+        },
+        "expected_records": (
+            questions * (len(cases) or 1) * repeats * systems * modes
+        ),
+    }
 
 
 def terminal_report(

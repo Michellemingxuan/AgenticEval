@@ -49,6 +49,14 @@ class RunRequest:
 #:   6  self_recovery_call_count — the transport re-issuing a stalled LLM
 #:      call. Recorded nowhere before, so an earlier run cannot say whether
 #:      it happened and must not read as zero
+#: Outcomes where the system PRODUCED AN ANSWER. `out_of_scope` is one: the
+#: system was asked something outside the case and declined, which for
+#: `q0_off_domain_rejection` is the CORRECT answer, not a failure to give one.
+#: Treating it as an error excluded it from judging, so the oracle that checks
+#: "did it decline" never ran and the question could not be scored at all.
+ANSWERED_OUTCOMES = frozenset({"ok", "out_of_scope"})
+
+
 RECORD_SCHEMA = 6
 
 

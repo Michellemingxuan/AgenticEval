@@ -47,7 +47,7 @@ from agentic_eval.render.markdown import (
 from agentic_eval.content.verdicts import MUST_HAVE_VERDICTS
 from agentic_eval.content.verify import _normalize_fact_results
 from agentic_eval.llm_judge import JudgeClient, OpenAIJudgeClient
-from agentic_eval.models import RECORD_SCHEMA
+from agentic_eval.models import ANSWERED_OUTCOMES, RECORD_SCHEMA
 from agentic_eval.layout import RunLayout
 
 
@@ -445,7 +445,13 @@ def evaluate_runs_file(
             "— re-run `run` to measure those."
         )
     evaluator = ContentEvaluator(config, judge=judge)
-    eligible = [row for row in records if row.get("outcome") == "ok" and row.get("final_answer")]
+    # `out_of_scope` counts: a refusal IS an answer, and q0 exists to check
+    # the system gives one. Requiring "ok" here meant the only question whose
+    # right answer is a refusal was silently dropped before judging.
+    eligible = [
+        row for row in records
+        if row.get("outcome") in ANSWERED_OUTCOMES and row.get("final_answer")
+    ]
     if questions:
         wanted = set(questions)
         eligible = [row for row in eligible if str(row.get("name")) in wanted]
