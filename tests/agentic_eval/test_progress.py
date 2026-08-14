@@ -189,3 +189,37 @@ def test_rows_follow_series_order_then_position_in_the_series():
     assert lines[3] == "series_b"
     assert lines[4].startswith("b2") and lines[5].startswith("b3")
     assert lines[6] == "series_c"
+
+
+def test_the_plan_is_recoverable_from_a_manifest():
+    """A finished run predating this page has no plan file beside it.
+
+    Without a fallback every denominator reads "?", which is the one thing a
+    progress page exists to supply.
+    """
+    plan = progress.plan_from_manifest({
+        "question_count": 4, "repeats": 2, "mode": "stateful",
+        "cases": ["366132845011", "11854808010 "],
+        "systems": {"previous": {}, "current": {}},
+        "question_sets": {"series_a": ["a1"], "series_b": ["b2", "b3"],
+                          "series_c": ["c1"]},
+    })
+    assert plan["expected_records"] == 4 * 2 * 2 * 2
+    assert plan["set_sizes"] == {"series_a": 1, "series_b": 2, "series_c": 1}
+    assert plan["question_order"] == ["a1", "b2", "b3", "c1"]
+    assert plan["set_of"]["b3"] == "series_b"
+    assert plan["case_ids"] == ["366132845011", "11854808010 "]
+
+
+def test_a_both_mode_run_expects_two_passes():
+    plan = progress.plan_from_manifest({
+        "question_count": 2, "repeats": 1, "mode": "both", "cases": ["c"],
+        "systems": {"a": {}, "b": {}}, "question_sets": {"s": ["q1", "q2"]},
+    })
+    assert plan["expected_records"] == 2 * 1 * 1 * 2 * 2
+
+
+def test_an_empty_manifest_does_not_invent_a_denominator():
+    plan = progress.plan_from_manifest({})
+    assert plan["expected_records"] == 0
+    assert progress.summarize([], plan=plan)["expected"] == 0

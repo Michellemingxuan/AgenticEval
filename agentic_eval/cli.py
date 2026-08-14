@@ -406,6 +406,12 @@ def main() -> None:
         "--watch", type=float, default=None, metavar="SECONDS",
         help="reprint every N seconds until the run finishes",
     )
+    progress_parser.add_argument(
+        "--write", action="store_true",
+        help="also rewrite content/progress.html from what is on disk. The "
+             "runner writes it as a run goes; this refreshes it afterwards, "
+             "or builds it for a run that predates the page",
+    )
     walkthrough_parser = subparsers.add_parser(
         "walkthrough",
         help="render answer -> atomic facts -> numeric verdicts as markdown",
@@ -494,12 +500,28 @@ def main() -> None:
             json.loads(state_path.read_text(encoding="utf-8"))
             if state_path.is_file() else {}
         )
+        if not state.get("plan"):
+            # No plan beside the page: a finished run from before this existed,
+            # or one killed before its first record. The manifest holds the
+            # same facts, so the denominators are recoverable rather than "?".
+            state = {
+                "plan": progress_render.plan_from_manifest(
+                    find_run_manifest(layout.runs)
+                ),
+                "started_at": None,
+            }
         while True:
             records = read_jsonl(layout.runs) if layout.runs.is_file() else []
             print(progress_render.terminal_report(
                 records, plan=state.get("plan") or {},
                 started_at=state.get("started_at"),
             ))
+            if args.write:
+                progress_render.write(
+                    layout.progress, records, plan=state.get("plan") or {},
+                    started_at=state.get("started_at"),
+                )
+                print(f"  wrote {layout.progress}")
             expected = int((state.get("plan") or {}).get("expected_records") or 0)
             if not args.watch or (expected and len(records) >= expected):
                 return
