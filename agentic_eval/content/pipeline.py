@@ -12,6 +12,8 @@ script can. The LLM proposes; nothing it returns is believed unchecked.
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -393,6 +395,7 @@ def evaluate_runs_file(
     baseline: str, candidate: str, rubric_by_name: dict[str, dict[str, Any]],
     judge: JudgeClient | None = None, limit: int | None = None,
     questions: list[str] | None = None, resume: bool = False,
+    workers: int = 1,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     layout = RunLayout(output_dir).ensure()
@@ -485,7 +488,34 @@ def evaluate_runs_file(
     for turns in by_session.values():
         turns.sort(key=lambda row: row.get("sequence_position") or 0)
 
-    for index, record in enumerate(eligible, 1):
+    # Judging is the expensive half — three calls an answer against a gateway
+    # that takes seconds each — and every answer is INDEPENDENT: `prior_turns`
+    # comes from the records, never from another evaluation, so no answer waits
+    # on one. Parallelism therefore changes wall-clock and nothing else.
+    #
+    # The unit is (system, case): a worker takes one system's answers for one
+    # case and walks its questions in order. Order costs nothing to keep and
+    # makes the log readable, and pairing a case with a system rather than
+    # splitting finer keeps each worker's judge client busy on related work.
+    lock = threading.Lock()
+    local = threading.local()
+    finished = [0]
+
+    def evaluator_for() -> ContentEvaluator:
+        """One judge client per THREAD, built on first use.
+
+        Not one per group: a group is short and there are more of them than
+        threads, and on the private gateway every client costs a token
+        acquisition. Not one shared either — `SafeChainClient` caches the
+        model it built, and handing that to several threads is a race nobody
+        would see until the verdicts were already written.
+        """
+        existing = getattr(local, "evaluator", None)
+        if existing is None:
+            existing = local.evaluator = ContentEvaluator(config, judge=judge)
+        return existing
+
+    def judge_one(record: dict[str, Any]) -> None:
         rubric = rubric_by_name.get(str(record.get("name"))) or record.get("evaluation") or {}
         position = record.get("sequence_position") or 0
         prior_turns = [
@@ -493,14 +523,43 @@ def evaluate_runs_file(
             for row in by_session.get(session_key(record), [])
             if (row.get("sequence_position") or 0) < position
         ]
-        result = evaluator.evaluate(record, rubric, prior_turns=prior_turns)
-        evaluations.append(result)
-        with out_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
+        result = evaluator_for().evaluate(record, rubric, prior_turns=prior_turns)
+        # One lock over the append, the list and the line: a half-written
+        # record in evaluations.jsonl is unparseable, and `--resume` reads it.
+        with lock:
+            evaluations.append(result)
+            with out_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(result, ensure_ascii=False, default=str) + "\n")
+            finished[0] += 1
+            print(
+                f"  content {finished[0]:>4}/{len(eligible)}  "
+                f"{record.get('system')}  {record.get('name')} "
+                f"#{record.get('run_index')}"
+            )
+
+    if workers <= 1:
+        for record in eligible:
+            judge_one(record)
+    else:
+        groups: dict[tuple, list[dict[str, Any]]] = {}
+        for record in eligible:
+            groups.setdefault(
+                (record.get("system"), record.get("case_id")), [],
+            ).append(record)
         print(
-            f"  content {index:>4}/{len(eligible)}  {record.get('system')}  "
-            f"{record.get('name')} #{record.get('run_index')}"
+            f"  judging {len(eligible)} answers over {workers} worker(s), "
+            f"{len(groups)} (system, case) group(s)"
         )
+
+        def run_group(items: list[dict[str, Any]]) -> None:
+            for record in items:
+                judge_one(record)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # `list` so an exception in any group surfaces here rather than
+            # being swallowed with the iterator.
+            list(pool.map(run_group, groups.values()))
+
     summary = aggregate_content_evaluations(
         evaluations,
         # Counted from the RECORDS, not from the config's k. Scoring runs as a
