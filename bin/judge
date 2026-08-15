@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Judge a run to completion, retrying through transient failures.
+#
+#   bin/judge --config experiments/configs/series_abcd.yaml \
+#             --runs experiments/results/<run>/runs.jsonl
+#
+# `evaluate-content --resume` keeps what it has already judged and asks only
+# for the rest, so re-running it is cheap and safe. The private environment
+# hands out 401s when a gateway token expires, which kills the pass partway;
+# this re-enters until every eligible answer is judged.
+#
+# It stops for three reasons, and says which:
+#
+#   done       every eligible answer has an evaluation
+#   stalled    an attempt finished and judged NOTHING NEW, twice running. A
+#              permanent error looks exactly like a transient one from here,
+#              and looping on it forever just spends the budget quietly.
+#   attempts   the ceiling was reached; raise it with --attempts
+#
+# Between attempts it prints how many answers are judged, how many remain, and
+# which questions they belong to — so a long pass can be watched rather than
+# guessed at.
+#
+#   --attempts N   how many times to re-enter (default 10)
+#   --backoff S    seconds to wait after a failure (default 30). A 401 needs a
+#                  fresh token, not an immediate retry.
+#   --workers N    judge N (system, case) groups at once (default 1). Answers
+#                  are judged independently, so this changes wall-clock only.
+set -euo pipefail
+
+CONFIG="" ; RUNS="" ; ATTEMPTS=10 ; BACKOFF=30 ; WORKERS=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)   CONFIG="$2"; shift 2 ;;
+    --runs)     RUNS="$2"; shift 2 ;;
+    --attempts) ATTEMPTS="$2"; shift 2 ;;
+    --backoff)  BACKOFF="$2"; shift 2 ;;
+    --workers)  WORKERS="$2"; shift 2 ;;
+    -h|--help)  sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *)          echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+[[ -n "$CONFIG" ]] || { echo "--config is required" >&2; exit 2; }
+[[ -n "$RUNS"   ]] || { echo "--runs is required" >&2; exit 2; }
+[[ -f "$RUNS"   ]] || { echo "no such runs file: $RUNS" >&2; exit 2; }
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if command -v agentic-eval >/dev/null 2>&1; then
+  EVAL=(agentic-eval)
+else
+  EVAL=("${AGENTIC_EVAL_PYTHON:-python3}" -m agentic_eval)
+  export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+RUN_DIR=$(cd "$(dirname "$RUNS")" && pwd)
+EVALS="$RUN_DIR/content/evaluations.jsonl"
+
+PY_BIN="${AGENTIC_EVAL_PYTHON:-python3}"
+
+# Judged / eligible, and what is left. Eligible mirrors the pipeline: an
+# answer exists and the outcome produced one — `out_of_scope` included, since
+# a refusal is an answer. Counting here rather than trusting the exit code is
+# what makes the loop terminate: a pass can exit 0 having judged nothing.
+status() {
+  "$PY_BIN" - "$RUNS" "$EVALS" <<'PYEOF'
+import collections, json, sys
+from pathlib import Path
+runs, evals = Path(sys.argv[1]), Path(sys.argv[2])
+ANSWERED = {"ok", "out_of_scope"}
+rows = [json.loads(l) for l in runs.open() if l.strip()]
+eligible = [r for r in rows
+            if r.get("outcome") in ANSWERED and r.get("final_answer")]
+
+def key(r):
+    return (r.get("system"), r.get("mode"), r.get("case_id"),
+            r.get("name"), r.get("run_index"), r.get("sequence_position"))
+
+done = set()
+if evals.is_file():
+    done = {key(json.loads(l)) for l in evals.open() if l.strip()}
+left = [r for r in eligible if key(r) not in done]
+# Two lines on stdout: the counts, then what is outstanding. Both captured by
+# the caller, so nothing escapes the command substitution and prints out of
+# order with the headings around it.
+print(len(eligible) - len(left), len(eligible))
+counts = collections.Counter(str(r.get("name")) for r in left)
+print(", ".join(f"{n}x{c}" for n, c in sorted(counts.items())))
+PYEOF
+}
+
+{ read -r JUDGED TOTAL; read -r LEFT || LEFT=""; } <<<"$(status)"
+echo "== judging $RUN_DIR"
+echo "   $JUDGED/$TOTAL already judged${LEFT:+ — left: $LEFT}"
+
+STALLED=0
+for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
+  if (( JUDGED >= TOTAL )); then
+    echo "== done: $JUDGED/$TOTAL judged"
+    exit 0
+  fi
+  echo "== attempt $attempt/$ATTEMPTS — $((TOTAL - JUDGED)) to go"
+  set +e
+  "${EVAL[@]}" evaluate-content --config "$CONFIG" --runs "$RUNS" \
+    --resume --workers "$WORKERS"
+  code=$?
+  set -e
+
+  BEFORE=$JUDGED
+  { read -r JUDGED TOTAL; read -r LEFT || LEFT=""; } <<<"$(status)"
+  GAINED=$(( JUDGED - BEFORE ))
+  echo "   attempt $attempt: exit $code, +$GAINED judged, now $JUDGED/$TOTAL${LEFT:+ — left: $LEFT}"
+
+  if (( GAINED > 0 )); then
+    STALLED=0
+  else
+    STALLED=$(( STALLED + 1 ))
+    # Twice with nothing to show means the failure is not transient. A 401
+    # that never clears and a permanent schema error look identical here, and
+    # neither is fixed by asking again.
+    if (( STALLED >= 2 )); then
+      echo "== stalled: two attempts judged nothing new (last exit $code)." >&2
+      echo "   $JUDGED/$TOTAL judged. Look at the error above before retrying." >&2
+      exit 1
+    fi
+  fi
+  # An `if`, not an `&&` chain: a false condition as the loop's last command
+  # makes the body's exit status 1, which is a trap to leave lying under
+  # `set -e` even where bash currently tolerates it.
+  if (( JUDGED < TOTAL )) && (( attempt < ATTEMPTS )); then
+    echo "   waiting ${BACKOFF}s"
+    sleep "$BACKOFF"
+  fi
+done
+
+if (( JUDGED >= TOTAL )); then
+  echo "== done: $JUDGED/$TOTAL judged"
+  exit 0
+fi
+echo "== gave up after $ATTEMPTS attempt(s): $JUDGED/$TOTAL judged" >&2
+exit 1

@@ -380,6 +380,15 @@ def main() -> None:
              "on one question costs a fraction of a full pass",
     )
     content_parser.add_argument(
+        "--workers", type=int, default=1, metavar="N",
+        help=(
+            "judge N (system, case) groups at once. Every answer is judged "
+            "independently — the judge's prior-turn context comes from the "
+            "run, not from other verdicts — so this changes wall-clock and "
+            "nothing else. Each worker builds its own judge client"
+        ),
+    )
+    content_parser.add_argument(
         "--resume", action="store_true",
         help="append only answers not already present in content/evaluations.jsonl",
     )
@@ -395,6 +404,23 @@ def main() -> None:
         "--output-dir", required=True, type=Path,
         help="new run folder to write; must not already exist",
     )
+    select_parser = subparsers.add_parser(
+        "select",
+        help="copy a run with some cases dropped, keeping the judging already paid for",
+    )
+    select_parser.add_argument("--runs", required=True, type=Path, metavar="RUN",
+                               help="the run folder, or its runs.jsonl")
+    select_parser.add_argument("--output-dir", required=True, type=Path,
+                               help="new run folder to write; must not exist")
+    select_parser.add_argument(
+        "--case-id", action="append", default=None, dest="case_ids",
+        metavar="ID", help="keep only these cases; repeat the flag",
+    )
+    select_parser.add_argument(
+        "--exclude-case", action="append", default=None, dest="excluded",
+        metavar="ID", help="drop these cases; repeat the flag",
+    )
+
     progress_parser = subparsers.add_parser(
         "progress", help="print how far a run has got, while it is still going",
     )
@@ -458,6 +484,62 @@ def main() -> None:
         path, applied = loaded
         # stderr: `validate` writes JSON that `bin/compare` parses.
         print(f"env: {path} ({applied} variable(s) set)", file=sys.stderr)
+
+    if args.command == "select":
+        from agentic_eval import merge as run_files
+
+        source = args.runs.expanduser().resolve()
+        records, manifest = run_files.read_run(source)
+        kept = run_files.select(
+            records, include=args.case_ids, exclude=args.excluded,
+        )
+        if not kept:
+            raise ValueError("that selection keeps no answers at all")
+        out = RunLayout(args.output_dir.expanduser().resolve())
+        if out.runs.exists():
+            raise ValueError(f"{out.runs} already exists; pick a new folder")
+        out.ensure()
+        out.runs.write_text(
+            "".join(json.dumps(r, default=str) + "\n" for r in kept),
+            encoding="utf-8",
+        )
+        cases = sorted({str(r.get("case_id")) for r in kept
+                        if r.get("case_id") is not None})
+        dropped = sorted(
+            {str(r.get("case_id")) for r in records
+             if r.get("case_id") is not None} - set(cases)
+        )
+        out.manifest.write_text(json.dumps({
+            **manifest, "cases": cases,
+            # Provenance, so a page built from this cannot be mistaken for one
+            # built from the whole run.
+            "selected_from": str(source),
+            "excluded_cases": dropped,
+            "n_records": len(kept),
+        }, indent=2), encoding="utf-8")
+
+        # Carry the verdicts across. Re-judging the cases that were KEPT would
+        # cost the whole spend again to reach the same answers.
+        source_layout = RunLayout.find(source) or RunLayout(source.parent)
+        carried = 0
+        if source_layout.evaluations.is_file():
+            done = run_files.select(
+                read_jsonl(source_layout.evaluations),
+                include=args.case_ids, exclude=args.excluded,
+            )
+            out.evaluations.write_text(
+                "".join(json.dumps(r, default=str) + "\n" for r in done),
+                encoding="utf-8",
+            )
+            carried = len(done)
+        print(
+            f"Selected {len(kept)} of {len(records)} answers into {out.runs}\n"
+            f"  kept:    {', '.join(describe_case(c) for c in cases)}\n"
+            f"  dropped: {', '.join(describe_case(c) for c in dropped) or 'nothing'}\n"
+            f"  carried {carried} existing evaluation(s)\n"
+            f"  next: agentic-eval rescore --runs {out.runs}"
+        )
+        return
 
     if args.command == "merge":
         from agentic_eval import merge as merge_runs
@@ -633,6 +715,7 @@ def main() -> None:
             limit=args.limit,
             questions=args.question,
             resume=args.resume,
+            workers=max(1, int(args.workers)),
         )
         print(f"Content evaluation complete: {path}")
         return
