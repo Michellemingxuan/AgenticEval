@@ -450,15 +450,38 @@ def _trace_fields(path: str | None, turn_id: str) -> dict[str, Any]:
         llm_rows = [row for row in leaves if ".round_" in str(row.get("node") or "")]
 
     def summed(field: str) -> int | None:
+        """Sum a token column, or None if no row reported it.
+
+        `or 0` on a NULL would report "nobody measured this" as a confident
+        zero — the same mistake as scoring an unrecorded metric as failure.
+        """
         if field not in columns or not llm_rows:
             return None
-        return sum(int(row.get(field) or 0) for row in llm_rows)
+        values = [
+            int(row[field]) for row in llm_rows if row.get(field) is not None
+        ]
+        return sum(values) if values else None
 
     prompt = summed("prompt_tokens")
     completion = summed("completion_tokens")
-    total = summed("total_tokens")
-    if total is None and prompt is not None and completion is not None:
-        total = prompt + completion
+    # Per ROW, not per column. A system that fills `total_tokens` on some rows
+    # and leaves it NULL on others — which the baseline does on the safechain
+    # path, where the orchestrator rows carry completions only — made the
+    # column sum to the completions alone. Measured in the private
+    # environment: prompt 37146, completion 1028, and a reported total of
+    # 1028, against the candidate's 293172. A 140x "improvement" that was
+    # entirely this.
+    #
+    # So take each row's own total when it has one, and reconstruct it from
+    # that row's prompt and completion when it does not.
+    per_row = [
+        int(row["total_tokens"]) if row.get("total_tokens") is not None
+        else (int(row.get("prompt_tokens") or 0)
+              + int(row.get("completion_tokens") or 0))
+        for row in llm_rows
+        if any(row.get(field) is not None for field in token_columns)
+    ]
+    total = sum(per_row) if per_row else None
 
     # SELF-RECOVERY, counted at three levels. All are the system noticing a
     # problem and fixing it WITHOUT being asked again, so all are benign —

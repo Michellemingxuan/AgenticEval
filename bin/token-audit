@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Why a system's token total looks wrong: what the adapter actually sums.
+
+    python3 token_audit.py <trace.db> [turn_id]
+
+The adapter sums prompt/completion/total over LEAF rows that carry token
+fields. A token-bearing row that has a child is not a leaf, and its tokens are
+dropped — which is the quiet way a total collapses.
+"""
+import sqlite3, sys, collections
+from pathlib import Path
+
+db = Path(sys.argv[1])
+conn = sqlite3.connect(f"file:{db.resolve()}?mode=ro", uri=True, timeout=5)
+conn.row_factory = sqlite3.Row
+cols = {r[1] for r in conn.execute("PRAGMA table_info(node_trace)")}
+print(f"token columns present: {sorted({'prompt_tokens','completion_tokens','total_tokens'} & cols)}")
+
+rows = [dict(r) for r in conn.execute("SELECT * FROM node_trace")]
+by_turn = collections.defaultdict(list)
+for r in rows:
+    by_turn[r.get("turn_id")].append(r)
+turns = [sys.argv[2]] if len(sys.argv) > 2 else list(by_turn)[:3]
+
+for turn in turns:
+    trace = by_turn.get(turn) or []
+    if not trace:
+        continue
+    child_of = {r["parent_id"] for r in trace if r.get("parent_id") is not None}
+    leaves = [r for r in trace if r["id"] not in child_of]
+    tok = [r for r in trace if any(r.get(f) is not None
+                                   for f in ("prompt_tokens", "completion_tokens", "total_tokens"))]
+    tok_leaf = [r for r in tok if r["id"] not in child_of]
+    dropped = [r for r in tok if r["id"] in child_of]
+    summed = lambda f, rs: sum(int(r.get(f) or 0) for r in rs)
+    print(f"\nturn {turn}: {len(trace)} rows, {len(leaves)} leaves, "
+          f"{len(tok)} carry tokens, {len(tok_leaf)} of those are leaves")
+    print(f"  ADAPTER SUMS (leaves only): prompt={summed('prompt_tokens', tok_leaf)} "
+          f"completion={summed('completion_tokens', tok_leaf)} "
+          f"total={summed('total_tokens', tok_leaf)}")
+    if dropped:
+        print(f"  DROPPED because not a leaf: {len(dropped)} row(s), "
+              f"total={summed('total_tokens', dropped)}")
+        for r in dropped[:5]:
+            print(f"      {str(r['node'])[:40]:40s} p={r['prompt_tokens']} "
+                  f"c={r['completion_tokens']} t={r['total_tokens']}")
+    nulls = [r for r in tok_leaf if r.get("prompt_tokens") is None]
+    if nulls:
+        print(f"  {len(nulls)} leaf row(s) have NO prompt_tokens "
+              f"(completion only): {[str(r['node'])[:30] for r in nulls[:5]]}")
