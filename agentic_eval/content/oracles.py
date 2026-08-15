@@ -167,30 +167,61 @@ def _boolean_answer_check(
         "true", "yes", "1",
     }
     affirmative = [
-        pattern for pattern in _as_list(item.get("affirmative_patterns"))
-        if re.search(str(pattern), normalized_answer)
+        (pattern, match.span())
+        for pattern in _as_list(item.get("affirmative_patterns"))
+        for match in re.finditer(str(pattern), normalized_answer)
     ]
     negative = [
-        pattern for pattern in _as_list(item.get("negative_patterns"))
+        (pattern, match.span())
+        for pattern in _as_list(item.get("negative_patterns"))
         if _is_denial(pattern, normalized_answer)
+        for match in re.finditer(str(pattern), normalized_answer)
     ]
     if not affirmative and not negative:
         return {
             "verdict": "unavailable",
             "reason": "The answer matches no affirmative or negative pattern.",
         }
-    # Negation wins when both fire. An affirmative pattern for an existence
-    # question ("had ... returns") matches inside the negated sentence that
-    # denies it ("had NO returned payments"), so treating a double match as
-    # ambiguous would make every correct negative answer unscoreable.
-    stated = not negative
+
+    # A denial wins only where it actually COVERS the claim.
+    #
+    # Negation used to win outright, for a good reason: on "had NO returned
+    # payments" the affirmative pattern (`had ... returns`) matches INSIDE the
+    # sentence that denies it, so calling a double match ambiguous made every
+    # correct negative answer unscoreable.
+    #
+    # But it also swallowed answers that affirm one thing and deny another:
+    #
+    #   "had 24 returned payments ... with no extreme single-date spikes"
+    #   "external delinquency index peaked at 0.52 ... no flagged delinquency"
+    #
+    # Both were graded FALSE while stating the opposite. The difference is
+    # containment: in the true denial the affirmative hit lies inside the
+    # negated span; here it sits in another clause entirely. So an affirmative
+    # match that no denial overlaps is a claim in its own right.
+    def _overlaps(span, spans) -> bool:
+        return any(span[0] < end and start < span[1] for start, end in spans)
+
+    negative_spans = [span for _pattern, span in negative]
+    standalone = [
+        (pattern, span) for pattern, span in affirmative
+        if not _overlaps(span, negative_spans)
+    ]
+    stated = bool(standalone) if negative else True
+    matched = (standalone or negative or affirmative)[0][0]
     return {
         "verdict": "pass" if stated == truth else "fail",
         "reason": (
             f"Ground truth is {truth}; the answer states {stated} "
-            f"(matched: {(negative or affirmative)[0]})."
-            + (" Both polarities matched; negation took precedence."
-               if negative and affirmative else "")
+            f"(matched: {matched})."
+            + (
+                " Both polarities matched; the affirmative sits outside every "
+                "denial, so it stands."
+                if negative and standalone else
+                " Both polarities matched; every affirmative falls inside a "
+                "denial, so negation took precedence."
+                if negative and affirmative else ""
+            )
         ),
     }
 

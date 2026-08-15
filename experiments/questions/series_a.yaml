@@ -122,8 +122,16 @@ questions:
           affirmative_patterns:
             - "\\b(yes|does|has|have|contains?|includes?|carries)\\b[^.]{0,80}\\bexternal\\b"
             - "\\bexternal (delinquenc|trade)"
+          # The negation must be about the FEATURE, not about the events the
+          # feature recorded. This question asks whether the model HAS
+          # external-delinquency information; an answer that reports the index
+          # AND says it shows no delinquency is a YES, and the plain pattern
+          # read "no flagged external delinquency" as a denial and marked a
+          # correct answer wrong. So a denial has to name what is absent:
+          # information, a feature, a column — not an event.
           negative_patterns:
-            - "\\b(no|not|lacks?|without|does not|no such)\\b[^.]{0,60}\\bexternal\\b"
+            - "\\b(no|not|lacks?|without|does not|no such)\\b[^.]{0,60}\\bexternal\\b[^.]{0,60}\\b(information|informative|feature|features|column|columns|field|fields|data|coverage|attribute|attributes|variable|variables)\\b"
+            - "\\b(no|not|lacks?|without|does not|no such)\\b[^.]{0,40}\\b(information|feature|features|column|columns|field|fields|data|coverage)\\b[^.]{0,40}\\bexternal\\b"
 
   - name: a5_latest_fico_score
     question: "What is the most recent FICO score?"
