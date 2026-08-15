@@ -131,7 +131,7 @@ def test_dropping_a_case_keeps_the_rest():
     from agentic_eval.merge import select
     rows = [_record("366"), _record("118 "), _record("366", name="q2")]
 
-    kept = select(rows, exclude=["118 "])
+    kept = select(rows, exclude_cases=["118 "])
 
     assert [r["case_id"] for r in kept] == ["366", "366"]
 
@@ -139,7 +139,7 @@ def test_dropping_a_case_keeps_the_rest():
 def test_keeping_only_named_cases():
     from agentic_eval.merge import select
     rows = [_record("366"), _record("118 "), _record("999")]
-    assert [r["case_id"] for r in select(rows, include=["999"])] == ["999"]
+    assert [r["case_id"] for r in select(rows, cases=["999"])] == ["999"]
 
 
 def test_a_case_id_that_is_not_there_is_an_error():
@@ -149,10 +149,103 @@ def test_a_case_id_that_is_not_there_is_an_error():
     rows = [_record("11854808010 ")]
 
     with pytest.raises(ValueError, match="trailing space"):
-        select(rows, exclude=["11854808010"])      # stripped
+        select(rows, exclude_cases=["11854808010"])      # stripped
 
 
 def test_include_and_exclude_together_are_refused():
     from agentic_eval.merge import select
     with pytest.raises(ValueError, match="not both"):
-        select([_record("a")], include=["a"], exclude=["a"])
+        select([_record("a")], cases=["a"], exclude_cases=["a"])
+
+
+def test_dropping_a_question_lets_a_fresh_run_replace_it():
+    """`merge` refuses duplicates, so the old answers have to go first."""
+    from agentic_eval.merge import merge, select
+    old = [_record("366", name="a1"), _record("366", name="b2")]
+    replacement = [_record("366", name="a1")]
+
+    trimmed = select(old, exclude_questions=["a1"])
+    joined, manifest = merge([(trimmed, _MANIFEST), (replacement, _MANIFEST)])
+
+    assert sorted(r["name"] for r in joined) == ["a1", "b2"]
+    assert manifest["cases"] == ["366"]
+
+
+def test_replacing_without_dropping_first_is_refused():
+    """The guard that makes the workflow safe: two a1s would double-count."""
+    from agentic_eval.merge import merge
+    old = [_record("366", name="a1")]
+    with pytest.raises(ValueError, match="twice"):
+        merge([(old, _MANIFEST), (old, _MANIFEST)])
+
+
+def test_case_and_question_filters_compose():
+    from agentic_eval.merge import select
+    rows = [_record(case, name=name)
+            for case in ("366", "118 ") for name in ("a1", "b2")]
+    kept = select(rows, exclude_cases=["118 "], exclude_questions=["a1"])
+    assert [(r["case_id"], r["name"]) for r in kept] == [("366", "b2")]
+
+
+def test_an_unknown_question_is_refused():
+    from agentic_eval.merge import select
+    with pytest.raises(ValueError, match="no question"):
+        select([_record("366", name="a1")], exclude_questions=["a9"])
+
+
+def test_merging_carries_the_judging_across(tmp_path):
+    """Leaving content/ empty means re-judging a merged run from scratch —
+    the whole spend again, for verdicts already sitting on disk."""
+    import json
+    import sys
+    from agentic_eval.cli import main
+    from agentic_eval.layout import RunLayout
+
+    def _write(folder, case):
+        layout = RunLayout(folder).ensure()
+        layout.manifest.write_text(json.dumps(_MANIFEST), encoding="utf-8")
+        record = _record(case)
+        layout.runs.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        layout.evaluations.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return folder
+
+    a, b = _write(tmp_path / "a", "366"), _write(tmp_path / "b", "118")
+    out = tmp_path / "joined"
+    argv = ["agentic-eval", "merge", "--runs", str(a), str(b),
+            "--output-dir", str(out)]
+    original, sys.argv = sys.argv, argv
+    try:
+        main()
+    finally:
+        sys.argv = original
+
+    joined = RunLayout(out)
+    assert joined.evaluations.is_file()
+    carried = [json.loads(l) for l in joined.evaluations.open()]
+    assert sorted(r["case_id"] for r in carried) == ["118", "366"]
+
+
+def test_an_evaluation_without_its_answer_is_not_carried(tmp_path):
+    """An orphan would inflate a count for an answer the merged run has not."""
+    import json
+    import sys
+    from agentic_eval.cli import main
+    from agentic_eval.layout import RunLayout
+
+    layout = RunLayout(tmp_path / "a").ensure()
+    layout.manifest.write_text(json.dumps(_MANIFEST), encoding="utf-8")
+    layout.runs.write_text(json.dumps(_record("366")) + "\n", encoding="utf-8")
+    # An evaluation for an answer that is not in runs.jsonl.
+    layout.evaluations.write_text(
+        json.dumps(_record("366", name="ghost")) + "\n", encoding="utf-8")
+
+    out = tmp_path / "joined"
+    original, sys.argv = sys.argv, [
+        "agentic-eval", "merge", "--runs", str(tmp_path / "a"),
+        "--output-dir", str(out)]
+    try:
+        main()
+    finally:
+        sys.argv = original
+
+    assert not RunLayout(out).evaluations.exists()

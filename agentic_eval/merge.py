@@ -101,42 +101,67 @@ def merge(
     return merged, manifest
 
 
-def select(
-    records: list[dict[str, Any]], *,
-    include: list[str] | None = None, exclude: list[str] | None = None,
+def _filter(
+    records: list[dict[str, Any]], field: str, label: str,
+    include: list[str] | None, exclude: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """The records for the cases worth keeping.
+    """Keep or drop by one field, refusing a name that is not there.
 
-    A case whose data tables are incomplete answers badly for a reason that
-    has nothing to do with either system, and pooled with the rest it moves
-    every rate — so the comparison reads as a difference in quality when it is
-    a difference in the fixture.
-
-    Dropping it belongs in a COPY of the run, not in a flag on each reader:
-    `rescore` and `compare-answers` would otherwise have to be given the same
-    filter every time, and one of them being forgotten produces a page whose
-    metrics describe a different set of answers than its own tables do.
-
-    Case ids are matched EXACTLY. One of the real ones ends in a space, and a
-    filter that stripped it would silently keep everything.
+    Silence would drop nothing and look exactly like success. The name most
+    likely to be wrong is the case id whose real value ends in a space, so the
+    message says to look for it.
     """
     if include and exclude:
         raise ValueError(
-            "give --case-id or --exclude-case, not both: two filters that "
+            f"give --{label} or --exclude-{label}, not both: two filters that "
             "disagree have no obvious answer"
         )
-    known = {str(record.get("case_id")) for record in records}
-    wanted = set(include or ())
-    unwanted = set(exclude or ())
-    for named in (wanted | unwanted):
+    if not include and not exclude:
+        return records
+    known = {str(record.get(field)) for record in records}
+    for named in set(include or ()) | set(exclude or ()):
         if named not in known:
             raise ValueError(
-                f"no case {named!r} in this run; it has "
-                f"{sorted(known)}. Check for a trailing space"
+                f"no {label} {named!r} in this run; it has {sorted(known)}. "
+                "Check for a trailing space"
             )
-    if wanted:
-        return [r for r in records if str(r.get("case_id")) in wanted]
-    return [r for r in records if str(r.get("case_id")) not in unwanted]
+    if include:
+        wanted = set(include)
+        return [r for r in records if str(r.get(field)) in wanted]
+    unwanted = set(exclude)
+    return [r for r in records if str(r.get(field)) not in unwanted]
+
+
+def select(
+    records: list[dict[str, Any]], *,
+    cases: list[str] | None = None, exclude_cases: list[str] | None = None,
+    questions: list[str] | None = None,
+    exclude_questions: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The records worth keeping, by case and by question.
+
+    Two uses, and they are different in kind.
+
+    DROPPING A CASE whose data tables are incomplete: both systems answer it
+    badly for a reason that is neither system's, and pooled with the rest it
+    moves every rate, so a difference in the fixture reads as a difference in
+    quality.
+
+    DROPPING A QUESTION so its answers can be replaced by a fresh run. `merge`
+    refuses duplicates, so the old answers have to go first. Note what that
+    costs in `stateful` mode: a question re-run on its own is turn 1 of its own
+    session, not turn N of the original conversation, so the spliced answers
+    were produced under different conditions than the ones around them. For a
+    question with no parent that is usually acceptable; for a follow-up it is
+    not, and the chain guard on `run` will refuse the selection anyway.
+
+    Either way this belongs in a COPY of the run rather than a flag on each
+    reader: `rescore` and `compare-answers` would both have to be given the
+    same filter every time, and forgetting one produces a page whose metrics
+    describe a different set of answers than its own tables do.
+    """
+    kept = _filter(records, "case_id", "case-id", cases, exclude_cases)
+    return _filter(kept, "name", "question", questions, exclude_questions)
 
 
 def read_run(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:

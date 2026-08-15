@@ -420,6 +420,20 @@ def main() -> None:
         "--exclude-case", action="append", default=None, dest="excluded",
         metavar="ID", help="drop these cases; repeat the flag",
     )
+    select_parser.add_argument(
+        "--question", action="append", default=None, dest="questions",
+        metavar="NAME", help="keep only these questions; repeat the flag",
+    )
+    select_parser.add_argument(
+        "--exclude-question", action="append", default=None,
+        dest="excluded_questions", metavar="NAME",
+        help=(
+            "drop these questions, so a fresh run of them can be merged in. "
+            "In stateful mode a question re-run alone is turn 1 of its own "
+            "session, not turn N of the original — the spliced answers were "
+            "produced under different conditions than the ones around them"
+        ),
+    )
 
     progress_parser = subparsers.add_parser(
         "progress", help="print how far a run has got, while it is still going",
@@ -491,7 +505,8 @@ def main() -> None:
         source = args.runs.expanduser().resolve()
         records, manifest = run_files.read_run(source)
         kept = run_files.select(
-            records, include=args.case_ids, exclude=args.excluded,
+            records, cases=args.case_ids, exclude_cases=args.excluded,
+            questions=args.questions, exclude_questions=args.excluded_questions,
         )
         if not kept:
             raise ValueError("that selection keeps no answers at all")
@@ -515,6 +530,10 @@ def main() -> None:
             # built from the whole run.
             "selected_from": str(source),
             "excluded_cases": dropped,
+            "excluded_questions": sorted(
+                {str(r.get("name")) for r in records}
+                - {str(r.get("name")) for r in kept}
+            ),
             "n_records": len(kept),
         }, indent=2), encoding="utf-8")
 
@@ -525,7 +544,9 @@ def main() -> None:
         if source_layout.evaluations.is_file():
             done = run_files.select(
                 read_jsonl(source_layout.evaluations),
-                include=args.case_ids, exclude=args.excluded,
+                cases=args.case_ids, exclude_cases=args.excluded,
+                questions=args.questions,
+                exclude_questions=args.excluded_questions,
             )
             out.evaluations.write_text(
                 "".join(json.dumps(r, default=str) + "\n" for r in done),
@@ -559,11 +580,39 @@ def main() -> None:
             encoding="utf-8",
         )
         layout.manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        # Carry the verdicts across, exactly as `select` does. Both sources may
+        # already be judged, and leaving content/ empty means re-judging a
+        # merged run from scratch — the whole spend again, for answers already
+        # sitting on disk. Only evaluations whose answer made it into the merge
+        # are kept, so an orphan cannot inflate a count for an answer nobody
+        # has.
+        wanted = {merge_runs.identity(record) for record in records}
+        carried = []
+        for path in args.runs:
+            resolved = path.expanduser().resolve()
+            source = RunLayout.find(resolved) or RunLayout(
+                resolved if resolved.is_dir() else resolved.parent
+            )
+            if source.evaluations.is_file():
+                carried.extend(
+                    row for row in read_jsonl(source.evaluations)
+                    if merge_runs.identity(row) in wanted
+                )
+        if carried:
+            layout.evaluations.write_text(
+                "".join(json.dumps(r, default=str) + "\n" for r in carried),
+                encoding="utf-8",
+            )
+        judged = f"{len(carried)} of {len(records)}"
         print(
             f"Merged {len(sources)} run(s) into {layout.runs}\n"
             f"  {len(records)} records over case(s): "
             + ", ".join(describe_case(c) for c in manifest.get("cases") or [])
+            + f"\n  carried {judged} answers already judged"
             + "\n  next: agentic-eval rescore --runs " + str(layout.runs)
+            + (f"\n        agentic-eval compare-answers --evaluations "
+               f"{layout.evaluations}" if carried else "")
         )
         return
 
