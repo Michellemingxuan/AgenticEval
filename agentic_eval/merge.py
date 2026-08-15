@@ -101,6 +101,44 @@ def merge(
     return merged, manifest
 
 
+def select(
+    records: list[dict[str, Any]], *,
+    include: list[str] | None = None, exclude: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The records for the cases worth keeping.
+
+    A case whose data tables are incomplete answers badly for a reason that
+    has nothing to do with either system, and pooled with the rest it moves
+    every rate — so the comparison reads as a difference in quality when it is
+    a difference in the fixture.
+
+    Dropping it belongs in a COPY of the run, not in a flag on each reader:
+    `rescore` and `compare-answers` would otherwise have to be given the same
+    filter every time, and one of them being forgotten produces a page whose
+    metrics describe a different set of answers than its own tables do.
+
+    Case ids are matched EXACTLY. One of the real ones ends in a space, and a
+    filter that stripped it would silently keep everything.
+    """
+    if include and exclude:
+        raise ValueError(
+            "give --case-id or --exclude-case, not both: two filters that "
+            "disagree have no obvious answer"
+        )
+    known = {str(record.get("case_id")) for record in records}
+    wanted = set(include or ())
+    unwanted = set(exclude or ())
+    for named in (wanted | unwanted):
+        if named not in known:
+            raise ValueError(
+                f"no case {named!r} in this run; it has "
+                f"{sorted(known)}. Check for a trailing space"
+            )
+    if wanted:
+        return [r for r in records if str(r.get("case_id")) in wanted]
+    return [r for r in records if str(r.get("case_id")) not in unwanted]
+
+
 def read_run(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """A run's records and manifest, given either path."""
     runs = path if path.is_file() else path / "runs.jsonl"

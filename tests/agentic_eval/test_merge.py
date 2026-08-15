@@ -123,3 +123,36 @@ def test_an_unfinished_run_says_so():
     finished = {**unfinished, "n_records": 32}
     assert unfinished["n_records"] is None
     assert finished["n_records"] == 32
+
+
+def test_dropping_a_case_keeps_the_rest():
+    """A case with incomplete data tables answers badly for a reason that is
+    neither system's, and pooled it moves every rate."""
+    from agentic_eval.merge import select
+    rows = [_record("366"), _record("118 "), _record("366", name="q2")]
+
+    kept = select(rows, exclude=["118 "])
+
+    assert [r["case_id"] for r in kept] == ["366", "366"]
+
+
+def test_keeping_only_named_cases():
+    from agentic_eval.merge import select
+    rows = [_record("366"), _record("118 "), _record("999")]
+    assert [r["case_id"] for r in select(rows, include=["999"])] == ["999"]
+
+
+def test_a_case_id_that_is_not_there_is_an_error():
+    """Silence would drop nothing and look like it worked — and the id most
+    likely to be wrong is the one whose real name ends in a space."""
+    from agentic_eval.merge import select
+    rows = [_record("11854808010 ")]
+
+    with pytest.raises(ValueError, match="trailing space"):
+        select(rows, exclude=["11854808010"])      # stripped
+
+
+def test_include_and_exclude_together_are_refused():
+    from agentic_eval.merge import select
+    with pytest.raises(ValueError, match="not both"):
+        select([_record("a")], include=["a"], exclude=["a"])
