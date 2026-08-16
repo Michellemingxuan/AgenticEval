@@ -26,9 +26,17 @@
 #                  fresh token, not an immediate retry.
 #   --workers N    judge N (system, case) groups at once (default 1). Answers
 #                  are judged independently, so this changes wall-clock only.
+#   --question N   RE-JUDGE this question, discarding the verdicts it already
+#                  has; repeatable. Everything else keeps its evaluations.
+#
+# `--question` is what to use after an oracle or rubric fix: the answers are
+# still good, only their verdicts are stale. Note the first attempt deliberately
+# runs WITHOUT `--resume` — with it, every one of that question's answers is
+# already present, so the pass judges nothing and still reports success. Later
+# attempts do resume, and pick up whatever a 401 interrupted.
 set -euo pipefail
 
-CONFIG="" ; RUNS="" ; ATTEMPTS=10 ; BACKOFF=30 ; WORKERS=1
+CONFIG="" ; RUNS="" ; ATTEMPTS=10 ; BACKOFF=30 ; WORKERS=1 ; QUESTIONS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)   CONFIG="$2"; shift 2 ;;
@@ -36,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --attempts) ATTEMPTS="$2"; shift 2 ;;
     --backoff)  BACKOFF="$2"; shift 2 ;;
     --workers)  WORKERS="$2"; shift 2 ;;
+    --question) QUESTIONS+=("$2"); shift 2 ;;
     -h|--help)  sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *)          echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -62,14 +71,23 @@ PY_BIN="${AGENTIC_EVAL_PYTHON:-python3}"
 # a refusal is an answer. Counting here rather than trusting the exit code is
 # what makes the loop terminate: a pass can exit 0 having judged nothing.
 status() {
-  "$PY_BIN" - "$RUNS" "$EVALS" <<'PYEOF'
+  "$PY_BIN" - "$RUNS" "$EVALS" ${QUESTIONS[@]+"${QUESTIONS[@]}"} <<'PYEOF'
 import collections, json, sys
 from pathlib import Path
 runs, evals = Path(sys.argv[1]), Path(sys.argv[2])
+# Named questions narrow the denominator. Without this a re-judge would read
+# "32/32 judged" from the answers it is about to replace and exit as done.
+wanted = set(sys.argv[3:])
 ANSWERED = {"ok", "out_of_scope"}
 rows = [json.loads(l) for l in runs.open() if l.strip()]
 eligible = [r for r in rows
             if r.get("outcome") in ANSWERED and r.get("final_answer")]
+if wanted:
+    eligible = [r for r in eligible if str(r.get("name")) in wanted]
+    if not eligible:
+        print("0 0")
+        print("no answers for " + ", ".join(sorted(wanted)))
+        raise SystemExit(3)
 
 def key(r):
     return (r.get("system"), r.get("mode"), r.get("case_id"),
@@ -88,22 +106,45 @@ print(", ".join(f"{n}x{c}" for n, c in sorted(counts.items())))
 PYEOF
 }
 
-{ read -r JUDGED TOTAL; read -r LEFT || LEFT=""; } <<<"$(status)"
+QARGS=()
+for question in ${QUESTIONS[@]+"${QUESTIONS[@]}"}; do
+  QARGS+=(--question "$question")
+done
+
+# `status` exits 3 when a named question matches no answer. Let that surface
+# here rather than after an attempt has already rewritten the file.
+if ! OUT=$(status); then
+  echo "$OUT" | tail -n 1 >&2
+  exit 2
+fi
+{ read -r JUDGED TOTAL; read -r LEFT || LEFT=""; } <<<"$OUT"
 echo "== judging $RUN_DIR"
-echo "   $JUDGED/$TOTAL already judged${LEFT:+ — left: $LEFT}"
+
+# Everything after the first attempt resumes. The first does too, UNLESS
+# questions were named: those verdicts are being replaced, and `--resume` would
+# see them as done and judge nothing.
+RESUME=(--resume)
+if (( ${#QUESTIONS[@]} > 0 )); then
+  RESUME=()
+  echo "   re-judging $TOTAL answer(s) for ${QUESTIONS[*]}; other questions kept"
+  JUDGED=0            # they are about to be discarded, so none are done
+else
+  echo "   $JUDGED/$TOTAL already judged${LEFT:+ — left: $LEFT}"
+fi
 
 STALLED=0
 for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
-  if (( JUDGED >= TOTAL )); then
+  if (( ${#RESUME[@]} > 0 )) && (( JUDGED >= TOTAL )); then
     echo "== done: $JUDGED/$TOTAL judged"
     exit 0
   fi
   echo "== attempt $attempt/$ATTEMPTS — $((TOTAL - JUDGED)) to go"
   set +e
   "${EVAL[@]}" evaluate-content --config "$CONFIG" --runs "$RUNS" \
-    --resume --workers "$WORKERS"
+    ${RESUME[@]+"${RESUME[@]}"} ${QARGS[@]+"${QARGS[@]}"} --workers "$WORKERS"
   code=$?
   set -e
+  RESUME=(--resume)   # the discard happened once; from here on, pick up
 
   BEFORE=$JUDGED
   { read -r JUDGED TOTAL; read -r LEFT || LEFT=""; } <<<"$(status)"
