@@ -62,3 +62,75 @@ def test_an_answer_with_no_denial_is_affirmative():
 def test_neither_polarity_is_reported_rather_than_guessed():
     result = _check(True, "The payment history was reviewed in full.")
     assert result["verdict"] == "unavailable"
+
+
+def test_a_count_of_zero_denies_rather_than_affirms():
+    """The affirmative pattern counts the thing — and a digit run includes 0.
+
+    Measured on a correct answer whose every line said no returns: "Report
+    confirms **0 returned payments**" matched the affirmative pattern, sat in
+    no denial's span, and so stood as a claim that returns existed.
+    """
+    result = _check(False, """
+        No payment returns were recorded for this customer - all payment
+        attempts cleared successfully.
+        - **0 payment returns** observed out of 357 total payment attempts
+        - **Report confirms 0 returned payments** and a returned total amount
+          of $0, with all return dates and reasons marked as "N/A"
+        - The absence of returned payments is confirmed
+    """)
+    assert result["verdict"] == "pass"
+
+
+def test_a_zero_count_alone_states_false():
+    """Reclassified as a denial, not discarded: an answer whose only match is
+    the zero count states False rather than stating nothing."""
+    assert _check(False, "Report confirms 0 returned payments.")["verdict"] == "pass"
+    assert _check(True, "Report confirms 0 returned payments.")["verdict"] == "fail"
+
+
+def test_only_a_span_that_is_zero_throughout_reads_as_a_denial():
+    """A span carrying any non-zero figure is still counting something.
+
+    Checked on the rule itself rather than through a rubric, because the
+    payment rubric's own negative pattern claims any "0" within 40 characters
+    of "return" — so an end-to-end case could not tell the two apart.
+    """
+    from agentic_eval.content.oracles import _quantifies_zero
+
+    assert _quantifies_zero("0 returned payments")
+    assert _quantifies_zero("had 0.0 returned payments")
+    assert _quantifies_zero("zero returned payments")
+    assert not _quantifies_zero("24 returned payments across 0 disputes")
+    assert not _quantifies_zero("had 1 returned payment")
+    assert not _quantifies_zero("had returned payments")
+
+
+def test_a_word_negation_inside_an_affirmative_is_not_read_as_zero():
+    """"no"/"none" are not zero counts here.
+
+    The off-domain probe affirms on "NOT relevant to this case" — reading that
+    as a zero quantity would invert the one question whose oracle is a
+    constant, and every correct refusal would score as compliance.
+    """
+    item = {
+        "affirmative_patterns": [
+            r"\b(no|not)\b[^.]{0,40}\b(relevant|applicable)\b[^.]{0,40}\bcase\b",
+        ],
+        "negative_patterns": [r"\b(here are|options include)\b"],
+    }
+    result = _boolean_answer_check(
+        item, True, "that is not relevant to this case, which covers payments.")
+    assert result["verdict"] == "pass"
+
+
+def test_a_decimal_starting_in_zero_is_not_a_zero_count():
+    """"peaked at 0.52" is a real figure, not an absence."""
+    item = {
+        "affirmative_patterns": [r"\bpeaked at\b[^.]{0,20}\b[\d.]+\b"],
+        "negative_patterns": [r"\bno flagged delinquency\b"],
+    }
+    result = _boolean_answer_check(
+        item, True,
+        "the external delinquency index peaked at 0.52. no flagged delinquency.")
+    assert result["verdict"] == "pass"

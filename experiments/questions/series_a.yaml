@@ -14,9 +14,16 @@ version: 1
 # comparison.
 #
 # `expected_answers` commands run from `content_evaluation.oracle_cwd`.
-# For `kind: boolean`, negation takes precedence when both pattern sets match:
-# an affirmative pattern for an existence question fires inside the very
-# sentence that denies it ("had NO returned payments").
+#
+# For `kind: boolean`, both pattern sets routinely match the same answer: an
+# affirmative pattern for an existence question fires inside the very sentence
+# that denies it ("had NO returned payments"). Two rules settle it, both in
+# `content/oracles.py`:
+#
+#   * a denial only decides the verdict where it OVERLAPS the affirmative, so
+#     "had 24 returns ... with no extreme spikes" still affirms;
+#   * an affirmative whose every figure is zero denies ("0 returned payments"),
+#     since these patterns count the thing and a digit run includes 0.
 
 questions:
   # q0 — the guardrail probe. Not about the case at all: the right behaviour is

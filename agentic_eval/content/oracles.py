@@ -137,6 +137,36 @@ _QUALIFIED_NEGATION = re.compile(
 )
 
 
+#: Any figure written inside a matched span, for reading its quantity.
+_QUANTITY = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def _quantifies_zero(text: str) -> bool:
+    """Does this span count at zero, and therefore deny what it names?
+
+    An existence question's affirmative patterns look for the thing being
+    counted — "<n> returned payments" — and a digit run happily includes 0.
+    Measured: "Report confirms **0 returned payments**" matched the affirmative
+    pattern, fell in no denial's span, and so was read as stating True against
+    a ground truth of False. The answer was right in every line.
+
+    "no" and "none" are deliberately NOT read as zero here. They are word
+    negations, the rubric's negative patterns already carry them, and they turn
+    up inside affirmative patterns that have nothing to do with counting — the
+    off-domain probe affirms on "NOT relevant to this case", which this must
+    not reclassify.
+
+    Only when every figure in the span is zero: "24 returned payments ... 0
+    single-date spikes" affirms 24 and denies something else, and the 24 wins.
+    """
+    numbers = [
+        float(token.replace(",", "")) for token in _QUANTITY.findall(text)
+    ]
+    if numbers:
+        return all(number == 0 for number in numbers)
+    return bool(re.search(r"\bzero\b", text, re.I))
+
+
 def _is_denial(pattern: str, answer: str) -> bool:
     """Does this negative pattern match a real denial, not a qualified one?
 
@@ -166,16 +196,26 @@ def _boolean_answer_check(
     truth = expected if isinstance(expected, bool) else str(expected).strip().lower() in {
         "true", "yes", "1",
     }
-    affirmative = [
-        (pattern, match.span())
+    hits = [
+        (pattern, match)
         for pattern in _as_list(item.get("affirmative_patterns"))
         for match in re.finditer(str(pattern), normalized_answer)
+    ]
+    affirmative = [
+        (pattern, match.span()) for pattern, match in hits
+        if not _quantifies_zero(match.group(0))
     ]
     negative = [
         (pattern, match.span())
         for pattern in _as_list(item.get("negative_patterns"))
         if _is_denial(pattern, normalized_answer)
         for match in re.finditer(str(pattern), normalized_answer)
+    ] + [
+        # A zero count is a denial wearing the affirmative's clothes. Kept as a
+        # denial rather than dropped, so an answer whose ONLY match is "0
+        # returned payments" states False instead of stating nothing.
+        (pattern, match.span()) for pattern, match in hits
+        if _quantifies_zero(match.group(0))
     ]
     if not affirmative and not negative:
         return {
