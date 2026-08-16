@@ -847,6 +847,15 @@ The HTML page is built automatically at the end of `evaluate-content` — there 
 no separate step. `agentic-eval compare-answers --evaluations <file>` rebuilds it
 alone, which is what to use when only the rendering changed.
 
+**All three views read in the same order — the one the questions were asked
+in.** `manifest.json` records `question_sets` at run time, and the page, the
+scorecard and the walkthrough all order by it, so moving between them by
+question works. Nothing derived from the answers would do: a name sorts
+`q0_off_domain_rejection` after `a1`, `sequence_position` is renumbered by a
+subset run so a re-asked follow-up floats above the question it follows, and
+file order is arrival order — a merged run is trimmed-then-fresh. A run with no
+plan in its manifest falls back to set name, then position, then natural name.
+
 Reading the page: it opens on **Metrics** — the overview, then a section per
 question set, with each set's questions nested under it. **Answers & claims**
 carries the case and repeat selectors, which switch *which answers are shown*

@@ -40,7 +40,7 @@ from agentic_eval.content.trace import (
     apply_trace_eligibility, audit_claim_traces, build_trace_view,
 )
 from agentic_eval.render.page import (
-    find_run_summary, write_answer_comparison,
+    find_run_manifest, find_run_summary, write_answer_comparison,
 )
 from agentic_eval.render.markdown import (
     content_comparison_markdown, write_content_walkthrough,
@@ -575,11 +575,19 @@ def evaluate_runs_file(
     layout.content_summary.write_text(
         json.dumps(summary, indent=2), encoding="utf-8",
     )
+    # One order for all three views, read from the run's own record of what it
+    # asked. Passed rather than re-read per report, so a page and a scorecard
+    # written in the same breath cannot disagree.
+    question_sets = find_run_manifest(layout.runs).get("question_sets")
     layout.content_comparison.write_text(
-        content_comparison_markdown(summary, baseline=baseline, candidate=candidate),
+        content_comparison_markdown(
+            summary, baseline=baseline, candidate=candidate,
+            question_sets=question_sets,
+        ),
         encoding="utf-8",
     )
-    write_content_walkthrough(evaluations, layout=layout)
+    write_content_walkthrough(
+        evaluations, layout=layout, question_sets=question_sets)
     write_answer_comparison(
         evaluations, layout=layout, baseline=baseline, candidate=candidate,
         summary=find_run_summary(output_dir),

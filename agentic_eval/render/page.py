@@ -22,15 +22,8 @@ from agentic_eval.common.coerce import _slug
 from agentic_eval.layout import RunLayout
 from agentic_eval.render.markers import GROUNDING_MARKER as _GROUNDING_MARKER
 
-def _natural_key(text: str) -> tuple:
-    """Sort `a2` before `a10`, and `series_a` before `series_b`.
-
-    Digit runs compare as numbers so question 10 does not land between 1 and 2.
-    """
-    return tuple(
-        (1, int(part)) if part.isdigit() else (0, part)
-        for part in re.split(r"(\d+)", str(text)) if part
-    )
+from agentic_eval.render.order import natural_key as _natural_key
+from agentic_eval.render.order import normalise_plan as _normalise_plan
 
 
 def _dig(source: dict[str, Any], key: str) -> Any:
@@ -1225,6 +1218,7 @@ def answer_comparison_html(
     evaluations: list[dict[str, Any]], *, baseline: str, candidate: str,
     mode: str | None = None, run_index: int | None = None,
     summary: dict[str, Any] | None = None,
+    question_sets: dict[str, Any] | None = None,
 ) -> str:
     chosen_mode, chosen_index = select_repeat(
         evaluations, mode=mode, run_index=run_index,
@@ -1287,35 +1281,61 @@ def answer_comparison_html(
         str(row.get("name")): str(row.get("question_set") or "questions")
         for row in evaluations
     }
-    # Ordered by NAME, naturally: series_a before series_b, a1 before a2
-    # before a10. Not by first appearance in the file — that was meant to
-    # recover the config's order, and it did until a subset re-judge rewrote
-    # the file in pieces and put the carried-over set first, so the page read
-    # b, a, c. Order a reader can predict beats order that depends on which
-    # questions were last re-scored.
+    # THE QUESTION SET IS THE AUTHORITY. `manifest.json` records
+    # `question_sets` — set name -> question names, both in config order — at
+    # run time, and it survives `select` and `merge` intact. Nothing derived
+    # from the answers matches it:
+    #
+    #   * NAME order is only right by luck of naming. `q0_off_domain_rejection`
+    #     opens series A and sorts after `a1`, so the guardrail probe rendered
+    #     last; a set named for its subject rather than its letter reorders the
+    #     whole page.
+    #   * `sequence_position` restarts at 1 per set AND is renumbered by a
+    #     subset run — re-ask b3 alone and it comes back as position 1, so the
+    #     spliced page reads b3, b2.
+    #
+    # Both fall back to below when the manifest has no plan: an older run, or
+    # one whose question was added afterwards. Planned always precedes
+    # unplanned, so a question the plan does not name lands after its set
+    # rather than at the front.
+    planned_sets = _normalise_plan(question_sets)
+    set_index = {name: index for index, name in enumerate(planned_sets)}
+    question_index = {
+        (set_name, question): index
+        for set_name, names in planned_sets.items()
+        for index, question in enumerate(names)
+    }
+    # Only sets that are actually present. A run filtered by `select` keeps the
+    # full plan in its manifest, and iterating that would grow empty sections
+    # for questions the run no longer has.
     set_rank = {
         name: index for index, name in enumerate(sorted(
             {str(row.get("question_set") or "questions") for row in evaluations},
-            key=_natural_key,
+            key=lambda name: (
+                (0, set_index[name]) if name in set_index
+                else (1, _natural_key(name))
+            ),
         ))
     }
 
-    def asked_at(name: str) -> tuple[int, float, str]:
+    def asked_at(name: str) -> tuple:
+        set_name = set_of.get(name) or "questions"
         positions = [
             float(row["sequence_position"])
             for rows in runs[name].values() for row in rows
             if row.get("sequence_position") is not None
         ]
+        planned = question_index.get((set_name, name))
         # Set FIRST, then position within it. `sequence_position` restarts at 1
         # in every set — each is its own conversation — so ordering by it alone
         # interleaved the sets and put every set's opening question together.
-        # Name as last tiebreak, so a run without positions still orders stably.
         return (
-            set_rank.get(set_of.get(name) or "questions", len(set_rank)),
-            # Position keeps a conversation in the order it was asked; the
-            # natural name settles anything it does not separate.
-            min(positions) if positions else float("inf"),
-            _natural_key(name),
+            set_rank.get(set_name, len(set_rank)),
+            # The plan when there is one; otherwise the order it was asked in,
+            # with the natural name settling what that does not separate.
+            (0, planned, 0.0, ()) if planned is not None
+            else (1, 0, min(positions) if positions else float("inf"),
+                  _natural_key(name)),
         )
 
     questions = sorted(by_question, key=asked_at)
@@ -1550,13 +1570,20 @@ def write_answer_comparison(
     evaluations: list[dict[str, Any]], *, layout: RunLayout, baseline: str,
     candidate: str, mode: str | None = None, run_index: int | None = None,
     summary: dict[str, Any] | None = None,
+    question_sets: dict[str, Any] | None = None,
 ) -> Path:
     layout.content_dir.mkdir(parents=True, exist_ok=True)
+    # The run's own record of what was asked, in the order it was asked. Read
+    # here rather than passed down every caller, so a page built by `run`, by
+    # `evaluate-content` and by `compare-answers` all order the same way.
+    if question_sets is None:
+        question_sets = find_run_manifest(layout.runs).get("question_sets")
     path = layout.answer_comparison
     path.write_text(
         answer_comparison_html(
             evaluations, baseline=baseline, candidate=candidate,
             mode=mode, run_index=run_index, summary=summary,
+            question_sets=question_sets,
         ),
         encoding="utf-8",
     )

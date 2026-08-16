@@ -13,6 +13,8 @@ from agentic_eval.render.markers import (
     GROUNDING_MARKER as _GROUNDING_MARKER,
 )
 from agentic_eval.layout import RunLayout
+from agentic_eval.render.order import question_sort_key
+from agentic_eval.render.page import find_run_manifest
 
 
 def _measured_sources() -> tuple[str, ...]:
@@ -31,15 +33,24 @@ def _measured_sources() -> tuple[str, ...]:
 
 def content_comparison_markdown(
     summary: dict[str, Any], *, baseline: str, candidate: str,
+    question_sets: dict[str, Any] | None = None,
 ) -> str:
     by_key = {
         (row["system"], row["mode"], row["name"]): row
         for row in summary.get("groups") or []
     }
-    keys = sorted({
-        (row["mode"], row["name"]) for row in summary.get("groups") or []
-        if row["system"] in {baseline, candidate}
-    })
+    # Same order as the page and the walkthrough — a reader moves between the
+    # three by question, and three different orders makes that guesswork.
+    # `summary.json` groups carry no position, so the fallback here is the
+    # natural name, which is what this table used before the plan existed.
+    rank = question_sort_key(question_sets)
+    keys = sorted(
+        {
+            (row["mode"], row["name"]) for row in summary.get("groups") or []
+            if row["system"] in {baseline, candidate}
+        },
+        key=lambda key: (key[0], rank(key[1])),
+    )
 
     def pct_with_sd(row: dict[str, Any], metric: str) -> str:
         distribution = (row.get("metric_distributions") or {}).get(metric) or {}
@@ -252,10 +263,30 @@ def content_walkthrough_markdown(evaluation: dict[str, Any]) -> str:
 
 def write_content_walkthrough(
     evaluations: list[dict[str, Any]], *, layout: RunLayout,
+    question_sets: dict[str, Any] | None = None,
 ) -> Path:
     path = layout.walkthrough
+    # File order is ARRIVAL order: a merged run is trimmed-then-fresh, so a
+    # re-run question's sections landed after everything that was kept, and a
+    # subset re-judge moved them again. Ordered like the page instead, then by
+    # case and repeat so a question's own sections stay together.
+    if question_sets is None:
+        question_sets = find_run_manifest(layout.runs).get("question_sets")
+    rank = question_sort_key(question_sets, rows=evaluations)
+    # No `system` in the key: sorting by it alphabetically puts the CANDIDATE
+    # first ("current" < "previous"), reversing the pairing every other view
+    # reads baseline-then-candidate. The sort is stable, so leaving it out
+    # keeps the order the file already has within a repeat.
+    ordered = sorted(
+        evaluations,
+        key=lambda row: (
+            rank(row.get("name")),
+            str(row.get("case_id") or ""),
+            int(row.get("run_index") or 0),
+        ),
+    )
     body = "\n".join(
-        content_walkthrough_markdown(evaluation) for evaluation in evaluations
+        content_walkthrough_markdown(evaluation) for evaluation in ordered
     )
     path.write_text(
         "# Content walkthrough\n\nRaw answer → claims → numeric verdicts, "
