@@ -29,7 +29,7 @@ questions:
         - id: has_payment_returns
           description: "Whether any payment was returned."
           kind: boolean
-          command: [python3, oracles/case_facts.py, --fact, has_payment_returns]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, has_payment_returns]
           critical: true
           affirmative_patterns:
             - "\\b(had|has|have|were|was|are|is)\\b[^.]{0,60}\\breturn(ed|s)?\\b"
@@ -39,7 +39,7 @@ questions:
             - "\\breturn(ed|s)?\\b[^.]{0,40}\\b(none|zero|0)\\b"
         - id: payment_return_count
           description: "Number of returned payments."
-          command: [python3, oracles/case_facts.py, --fact, payment_return_count]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, payment_return_count]
           tolerance: 0
           critical: true
           # The truth here is zero, and a correct answer says so in words
@@ -53,7 +53,7 @@ questions:
       expected_answers:
         - id: commercial_card_count
           description: "Cards in the small-business (SBS) portfolio."
-          command: [python3, oracles/case_facts.py, --fact, commercial_card_count]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, commercial_card_count]
           tolerance: 0
           critical: true
 
@@ -72,7 +72,7 @@ questions:
       expected_answers:
         - id: commercial_card_balance
           description: "Total balance across the commercial cards."
-          command: [python3, oracles/case_facts.py, --fact, commercial_card_balance]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, commercial_card_balance]
           # Answers commonly round to whole dollars.
           tolerance: 1
           critical: true
@@ -87,7 +87,7 @@ questions:
             the external_delinquency concept.
           kind: boolean
           command:
-            [python3, oracles/case_facts.py, --fact, has_external_delinquency_features]
+            [python3, oracles/case_facts.py, --case, '{case_id}', --fact, has_external_delinquency_features]
           critical: true
           affirmative_patterns:
             - "\\b(yes|does|has|have|contains?|includes?|carries)\\b[^.]{0,80}\\bexternal\\b"
@@ -101,7 +101,7 @@ questions:
       expected_answers:
         - id: latest_fico_score
           description: "FICO score for the most recent bureau month."
-          command: [python3, oracles/case_facts.py, --fact, latest_fico_score]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, latest_fico_score]
           tolerance: 0
           critical: true
 
@@ -113,6 +113,6 @@ questions:
           description: >-
             Spend transactions in the latest month present in the spends table.
           command:
-            [python3, oracles/case_facts.py, --fact, transactions_last_month]
+            [python3, oracles/case_facts.py, --case, '{case_id}', --fact, transactions_last_month]
           tolerance: 0
           critical: true

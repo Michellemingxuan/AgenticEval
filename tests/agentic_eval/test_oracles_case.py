@@ -187,3 +187,64 @@ def test_a_word_for_a_different_number_does_not_pass():
     assert _spelled_number_in("had one returned payment", 2) is None
     # Beyond twelve prose uses digits; a word-match there would be reaching.
     assert _spelled_number_in("had twenty returns", 20) is None
+
+
+def test_every_shipped_oracle_binds_the_case_it_asks_about():
+    """The guard `_bind_case` cannot provide.
+
+    It refuses a command whose `{case_id}` cannot be filled — but a rubric that
+    never wrote the placeholder asks for nothing, so there is nothing to refuse
+    and the oracle answers about whatever case it defaults to.
+
+    Measured on a real run: `b1_case_overview` shipped without `--case`, so an
+    answer about a customer with 2 SBS cards and 24 returned payments was
+    graded against another case's 1 and 0. The card count read as wrong, and
+    the return count read as RIGHT — the answer said "no consumer cards", which
+    put a 0 in it, and 0 was the other case's return count.
+
+    Only `case_facts.py` is checked: an oracle can legitimately take no case,
+    like the off-domain probe's `print('true')`.
+    """
+    import glob
+
+    import yaml
+
+    blind = []
+    for path in sorted(glob.glob("experiments/questions/*.yaml")):
+        for question in (yaml.safe_load(open(path)) or {}).get("questions") or []:
+            for item in (question.get("evaluation") or {}).get(
+                "expected_answers"
+            ) or []:
+                command = [str(part) for part in item.get("command") or []]
+                if not any("case_facts" in part for part in command):
+                    continue
+                if "{case_id}" not in " ".join(command):
+                    blind.append(f"{path}::{question['name']}::{item['id']}")
+
+    assert not blind, (
+        "these oracles read case data but never receive the case, so they "
+        f"answer about whichever one they default to: {blind}"
+    )
+
+
+def test_the_oracle_script_refuses_to_guess_a_case():
+    """`--case` is required, with no default.
+
+    A default is the worst possible behaviour: the script runs, prints a
+    number, and the number is for a different customer. Exiting non-zero makes
+    the evaluator report the oracle unavailable and say why, which is
+    recoverable; a plausible wrong number is not.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path("experiments/oracles/case_facts.py").resolve()
+    result = subprocess.run(
+        [sys.executable, str(script), "--fact", "commercial_card_count"],
+        capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode != 0
+    assert "--case" in result.stderr
+    assert not result.stdout.strip(), "a refusal must not also print a value"

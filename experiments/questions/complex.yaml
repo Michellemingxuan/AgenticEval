@@ -26,12 +26,12 @@ questions:
       expected_answers:
         - id: commercial_card_count
           description: "Cards in the small-business (SBS) portfolio."
-          command: [python3, oracles/case_facts.py, --fact, commercial_card_count]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, commercial_card_count]
           tolerance: 0
           critical: true
         - id: payment_return_count
           description: "Payments flagged as returned."
-          command: [python3, oracles/case_facts.py, --fact, payment_return_count]
+          command: [python3, oracles/case_facts.py, --case, '{case_id}', --fact, payment_return_count]
           tolerance: 0
           critical: true
       must_have_points:

@@ -5,7 +5,7 @@ Reads the case CSVs directly. This is data access, not a system import: the
 evaluator still never loads either AgenticSys checkout, so a wrong answer here
 cannot be produced by the same bug that produced a wrong answer there.
 
-    python case_facts.py --fact latest_fico_score
+    python case_facts.py --case 366132845011 --fact latest_fico_score
 
 Prints JSON `{"value": ..., "detail": {...}}` on stdout. `value` is what the
 evaluator compares against the answer; `detail` is for the reviewer.
@@ -27,7 +27,6 @@ from pathlib import Path
 # those two cases.
 _PROJECTS_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_ROOT = _PROJECTS_ROOT / "AgenticSys_v2" / "data_tables" / "real"
-DEFAULT_CASE = "366132845011"
 # The catalog tags model features by concept; these are the profile files that
 # describe the modelling tables.
 CONCEPT_PROFILES = ("model_scores.yaml", "model_scores_transaction.yaml")
@@ -260,7 +259,18 @@ FACTS = {
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fact", required=True, choices=sorted(FACTS))
-    parser.add_argument("--case", default=DEFAULT_CASE)
+    # REQUIRED, with no default. A default is the worst possible behaviour
+    # here: the script runs, prints a number, and the number is for a
+    # different customer. Measured on a real run — `b1_case_overview` never
+    # passed `--case`, so an answer about a case with 2 SBS cards and 24
+    # returned payments was graded against this file's default case, which has
+    # 1 and 0. The card count read as wrong and the return count read as
+    # RIGHT, because "no consumer cards" put a 0 in the answer.
+    #
+    # Exiting non-zero instead makes the evaluator report the oracle as
+    # unavailable and say why, which is recoverable. A plausible wrong number
+    # is not: nothing downstream can tell it from a real one.
+    parser.add_argument("--case", required=True)
     parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     parser.add_argument(
         "--profile-dir",
