@@ -89,6 +89,46 @@ def test_a_zero_count_alone_states_false():
     assert _check(True, "Report confirms 0 returned payments.")["verdict"] == "fail"
 
 
+def test_a_column_name_is_not_a_claim_that_returns_exist():
+    """Both systems describe the query they ran, and the affirmative pattern is
+    loose proximity — "<verb> ... return" — so it fires on the schema.
+
+    "**0 returned payments** were found (Return Flag = 1 in payments table)"
+    matched "were found (return", the tail of a filter SPEC. It names no
+    quantity, so the zero rule left it; it sits outside the zero's span, so
+    containment left it. A description of HOW the system looked became a claim
+    about what it found.
+    """
+    result = _check(False, """
+        No prior curated reports - answer is from live specialist analysis
+        only. The customer had **no payment returns** - all payment attempts
+        cleared successfully.
+        - **0 returned payments** were found (Return Flag = 1 in payments table)
+        - All present payment rows show **Return Flag = 0** (successful)
+        - Payment return status checked across **all payment records**
+    """)
+    assert result["verdict"] == "pass"
+
+
+def test_a_real_count_beside_the_same_column_name_still_affirms():
+    """The rule must not swallow the answer that gets the true case right."""
+    result = _check(True, "The customer had **1 returned payment** of "
+                          "$105,818.60 (Return Flag = 1) in the period.")
+    assert result["verdict"] == "pass"
+
+
+def test_only_the_affirmative_side_is_read_as_schema():
+    """"all rows show Return Flag = 0" is a real finding, and reading it as a
+    column name would leave a correct negative answer with no denial at all."""
+    from agentic_eval.content.oracles import _names_a_column
+    import re
+
+    answer = "all present payment rows show return flag = 0"
+    match = re.search(r"\breturn\b", answer)
+    assert _names_a_column(answer, match)          # it IS a column reference
+    assert _check(False, answer)["verdict"] == "pass"   # still scores as denial
+
+
 def test_only_a_span_that_is_zero_throughout_reads_as_a_denial():
     """A span carrying any non-zero figure is still counting something.
 

@@ -167,6 +167,34 @@ def _quantifies_zero(text: str) -> bool:
     return bool(re.search(r"\bzero\b", text, re.I))
 
 
+#: A word that turns the token before it into a COLUMN NAME rather than a
+#: thing that happened. Checked immediately after an affirmative match.
+_SCHEMA_QUALIFIER = re.compile(
+    r"\s*(?:flag|status|code|column|field|indicator|reason|type)\b", re.I,
+)
+
+
+def _names_a_column(answer: str, match: re.Match) -> bool:
+    """Does this match end by naming a column instead of a fact?
+
+    Both systems describe the query they ran, and an existence question's
+    affirmative pattern is loose proximity — "<verb> ... return" — so it fires
+    on the schema. Measured on an answer that was right in every line:
+
+        **0 returned payments** were found (Return Flag = 1 in payments table)
+
+    matched "were found (return", which is the tail of a filter SPEC. It named
+    no quantity, so the zero rule left it alone, and it sat outside the zero's
+    span, so containment left it alone too — and a description of how the
+    system looked became a claim about what it found.
+
+    Only affirmatives are checked. "all rows show Return Flag = 0" reads as a
+    denial and is a real finding; the same words on the affirmative side assert
+    an existence the answer never claimed.
+    """
+    return bool(_SCHEMA_QUALIFIER.match(answer, match.end()))
+
+
 def _is_denial(pattern: str, answer: str) -> bool:
     """Does this negative pattern match a real denial, not a qualified one?
 
@@ -204,6 +232,7 @@ def _boolean_answer_check(
     affirmative = [
         (pattern, match.span()) for pattern, match in hits
         if not _quantifies_zero(match.group(0))
+        and not _names_a_column(normalized_answer, match)
     ]
     negative = [
         (pattern, match.span())
