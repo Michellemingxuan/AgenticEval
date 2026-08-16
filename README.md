@@ -17,6 +17,131 @@ bin/compare --config experiments/configs/series_abcd.yaml --scope smoke
 the page. [Running a comparison](#running-a-comparison) covers its flags;
 `--scope smoke` is the cheap end-to-end check to start from.
 
+## Common scenarios
+
+Most work after the first run is *re*-work: a question to re-ask, an oracle
+that was wrong, a gateway that hands out 401s halfway. `runs.jsonl` is the only
+irreplaceable artifact, so almost none of it needs the systems restarted.
+
+| I want to… | command | costs |
+|---|---|---|
+| check a config, starting nothing | `agentic-eval validate --config <cfg>` | — |
+| try the whole chain cheaply | `bin/compare --config <cfg> --scope smoke` | a smoke run |
+| run the full comparison | `bin/compare --config <cfg>` | everything |
+| run the systems, judge later | `agentic-eval run --config <cfg>` | the run |
+| [judge a run, retrying through 401s](#judging-through-a-flaky-gateway) | `bin/judge --config <cfg> --runs <run>/runs.jsonl --workers 4` | judge calls |
+| [re-judge one question after an oracle fix](#re-judging-one-question) | `bin/judge … --question a1_payment_returns_occurrence` | that question only |
+| [rebuild metrics after a scoring fix](#rescoring-without-re-running) | `agentic-eval rescore --runs <run>/runs.jsonl` | free |
+| rebuild the page only | `agentic-eval compare-answers --evaluations <run>/content/evaluations.jsonl` | free |
+| watch a run that is still going | `agentic-eval progress --run <run> --watch 30` | free |
+| [split a long run, then join it](#splitting-a-run-and-joining-it-back) | `agentic-eval run --case-id A`, then `… merge --runs <A> <B> --output-dir <C>` | free to join |
+| [drop cases with incomplete data tables](#dropping-cases-and-replacing-questions) | `agentic-eval select --runs <run> --exclude-case '<id>' --output-dir <new>` | free |
+| [re-ask one question and splice it in](#dropping-cases-and-replacing-questions) | `select --exclude-question` → `run --question` → `merge` | one question's run |
+| [check the private gateway first](#the-judge-transport) | `bin/safechain-doctor` | — |
+
+Two `agentic-eval` commands re-derive everything downstream and neither touches
+a system: `rescore` rebuilds `metrics/` from the answers, `evaluate-content`
+rebuilds `content/`. The `bin/` scripts are thin loops over them for the cases
+where one invocation is not enough — a gateway that needs retrying, or a chain
+of three commands that must not be run out of order.
+
+### Judging through a flaky gateway
+
+`evaluate-content --resume` keeps what it has and asks only for the rest, so
+re-entering it is cheap and safe. `bin/judge` does the re-entering:
+
+```bash
+bin/judge --config experiments/configs/series_abcd.yaml \
+  --runs experiments/results/<run>/runs.jsonl --workers 4
+```
+
+It stops for one of three reasons and says which: **done**, **stalled** (two
+attempts judged nothing new — a permanent error looks exactly like a transient
+one from here, and looping on it just spends the budget quietly), or
+**attempts** exhausted. Between attempts it prints how many answers are judged
+and which questions the rest belong to, so a long pass can be watched.
+
+Termination is counted from the files rather than trusted to an exit code,
+because a pass can exit 0 having judged nothing at all.
+
+### Re-judging one question
+
+When an oracle or a rubric is fixed, the answers are still good and only their
+verdicts are stale. Re-judge that one question and keep everything else:
+
+```bash
+bin/judge --config experiments/configs/series_abcd.yaml \
+  --runs experiments/results/<run>/runs.jsonl \
+  --question a1_payment_returns_occurrence --workers 4
+```
+
+The first attempt deliberately runs **without** `--resume`, because with it
+every one of that question's answers is already present, so the pass judges
+nothing and still reports success. Later attempts do resume and pick up
+whatever a 401 interrupted. A question name matching no answer exits before
+anything is written, rather than clearing the question it meant and judging
+nothing back.
+
+Re-judging re-extracts claims, so that question's grounding numbers will move
+slightly through judge nondeterminism — it is not a pure oracle refresh.
+
+### Splitting a run and joining it back
+
+`run` has no resume, but a long pass splits by **case** — a worker already owns
+whole cases, and every record carries its own `case_id`:
+
+```bash
+agentic-eval run --config <cfg> --case-id 366132845011      # today
+agentic-eval run --config <cfg> --case-id '11854808010 '    # tomorrow
+agentic-eval merge --runs <run-A> <run-B> --output-dir <joined>
+agentic-eval rescore --runs <joined>/runs.jsonl
+```
+
+`merge` carries the judging across, so answers already scored in either source
+arrive scored — it prints `carried N of M`. It refuses two things outright,
+because a merged file is an input to everything downstream and nothing after
+that point can tell: a **duplicated** answer, which would double every count
+and make consistency compare a run against itself, and sources whose manifests
+**disagree** on baseline, candidate or mode.
+
+### Dropping cases and replacing questions
+
+`select` copies a run with some of it removed, keeping the judging already paid
+for. Two uses, different in kind.
+
+A case whose data tables are incomplete is answered badly by both systems for a
+reason that is neither system's, and pooled it moves every rate:
+
+```bash
+agentic-eval select --runs <run> --exclude-case '11854808010 ' \
+  --output-dir <filtered>
+agentic-eval rescore --runs <filtered>/runs.jsonl
+agentic-eval compare-answers --evaluations <filtered>/content/evaluations.jsonl
+```
+
+Replacing a question's answers needs the old ones dropped first, since `merge`
+refuses duplicates:
+
+```bash
+agentic-eval select --runs <run> --exclude-question b2_tsr_cdss_reaction \
+  --output-dir <trimmed>
+agentic-eval run --config <cfg> --question b2_tsr_cdss_reaction …
+agentic-eval merge --runs <trimmed> <fresh> --output-dir <spliced>
+```
+
+In `stateful` mode, know what that costs: a question re-run on its own is turn
+1 of its own session, not turn N of the original conversation, so the spliced
+answers were produced under different conditions than the ones around them. For
+a question with no parent that is usually acceptable; for a follow-up it is
+not, and `run`'s chain guard refuses the selection anyway.
+
+Both commands filter into a **copy** rather than taking a flag on each reader:
+`rescore` and `compare-answers` would otherwise both need the same filter every
+time, and forgetting one produces a page whose metrics describe a different set
+of answers than its own tables do. A case id or question name that is not in
+the run is an error — silence would drop nothing and look exactly like success,
+and the id most likely to be wrong is the one whose real value ends in a space.
+
 `experiment.repeats` is the shared repetition count `k`. Each system receives
 the same question set `k` times. The resulting physical runs are reused for all
 four analyses: latency/resources, orchestration consistency, memory use, and
@@ -296,11 +421,29 @@ For questions a script can answer outright, no judge is consulted. Add
 `command`; Python computes the truth and compares it against the numbers the
 answer states, reporting `expected_answer_accuracy_rate`. `kind: boolean`
 checks a yes/no ground truth against rubric-supplied `affirmative_patterns` and
-`negative_patterns`, with negation taking precedence when both match; numeric
-items accept `accept_patterns` for values normally written in words, such as a
-count of zero. See
+`negative_patterns`; numeric items accept `accept_patterns` for values normally
+written in words, such as a count of zero. See
 [the simple-question suite](experiments/questions/simple.yaml) and
 [its oracles](experiments/oracles/case_facts.py).
+
+Both pattern sets routinely match the same answer, because an affirmative
+pattern for an existence question fires inside the very sentence denying it
+("had **no** returned payments"). Two rules settle that, and each exists
+because its absence graded a correct answer backwards:
+
+- a denial decides the verdict only where it **overlaps** the affirmative, so
+  "had 24 returned payments … with no extreme single-date spikes" still
+  affirms 24;
+- an affirmative whose every figure is **zero** denies instead — these patterns
+  count the thing being asked about, and a digit run includes `0`, so
+  "Report confirms **0 returned payments**" was read as stating that returns
+  existed.
+
+The second rule reads only numeric zeros. `no` and `none` are word negations
+the rubric already carries, and they appear inside affirmative patterns that
+have nothing to do with counting — the off-domain probe affirms on "**not**
+relevant to this case", and reclassifying that would score every correct
+refusal as compliance.
 
 Claims without numbers get their own measurement, because the numeric funnel is
 `not_applicable` for them and would otherwise leave them scored on the judge's
