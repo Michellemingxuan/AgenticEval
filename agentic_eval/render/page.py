@@ -506,6 +506,24 @@ def _facts_table(evaluation: dict[str, Any] | None) -> str:
     )
 
 
+#: How a verdict is marked. Anything else — `unavailable` — is neither, and
+#: gets an en dash rather than a ✗ it did not earn.
+_ORACLE_MARK = {"pass": "✓", "fail": "✗"}
+_ORACLE_ROW = {"pass": "", "fail": ""}
+
+
+def _oracle_expected(row: dict[str, Any]) -> str:
+    """The ground truth, or a dash when the oracle could not produce one.
+
+    `str(None)` rendered the word "None" in the expected column, which reads
+    like a computed answer of none rather than a check that never ran.
+    """
+    expected = row.get("expected")
+    if expected is None:
+        return '<span class="loc">not computed</span>'
+    return html.escape(str(expected))
+
+
 def _oracle_found(row: dict[str, Any]) -> str:
     """What the answer actually said, for one expected answer.
 
@@ -516,6 +534,10 @@ def _oracle_found(row: dict[str, Any]) -> str:
     """
     if row.get("matched_value") is not None:
         return html.escape(str(row["matched_value"]))
+    if _slug(row.get("verdict")) not in {"pass", "fail"}:
+        # Nothing was compared, so the answer cannot be missing anything.
+        # "not in answer" blamed the answer for the oracle's own failure.
+        return '<span class="loc">not checked</span>'
     if _slug(row.get("verdict")) == "pass":
         # Matched by wording; the answer agreed with the expected value.
         return (
@@ -549,11 +571,19 @@ def _expectations_block(evaluation: dict[str, Any] | None) -> str:
         return ""
     oracles = evaluation.get("expected_answer_results") or []
     if oracles:
+        # UNAVAILABLE IS NOT A FAILURE. Everything that was not `pass` used to
+        # draw the same ✗, so an oracle whose command failed — no ground truth
+        # computed, nothing compared — read as "the system got this wrong".
+        # It is excluded from the accuracy rate on both sides, and the mark has
+        # to say so or the page and the metric tell different stories.
+        # The reason is already on the row's tooltip; that is where the cause
+        # of a failed command shows up.
         rows = "".join(
-            f"<tr title=\"{html.escape(str(row.get('reason') or ''))}\">"
-            f"<td>{'✓' if row.get('verdict') == 'pass' else '✗'}</td>"
+            f"<tr class=\"{_ORACLE_ROW.get(_slug(row.get('verdict')), 'skip')}\" "
+            f"title=\"{html.escape(str(row.get('reason') or ''))}\">"
+            f"<td>{_ORACLE_MARK.get(_slug(row.get('verdict')), '–')}</td>"
             f"<td>{html.escape(str(row.get('expected_answer_id') or ''))}</td>"
-            f'<td class="num">{html.escape(str(row.get("expected")))}</td>'
+            f'<td class="num">{_oracle_expected(row)}</td>'
             f'<td class="num">{_oracle_found(row)}</td></tr>'
             for row in oracles
         )
@@ -1729,6 +1759,9 @@ table.expect td, table.expect th {
   border-bottom: 1px solid var(--line);
 }
 table.expect td:first-child { width: 18px; text-align: center; }
+/* An oracle that could not run is greyed, not marked wrong: it is excluded
+   from the accuracy rate, and a ✗ would read as the system's failure. */
+table.expect tr.skip td { color: var(--faint); }
 .facts tr.judge-error td { background: #fffbeb; }
 .facts .warn { color: #b45309; cursor: help; }
 .facts .measures {

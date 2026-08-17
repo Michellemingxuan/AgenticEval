@@ -39,6 +39,30 @@ def _bind_case(command: list[Any], case_id: str | None) -> tuple[list[str], str 
     return [part.replace(_CASE_PLACEHOLDER, case_id) for part in parts], None
 
 
+def _failure_line(stderr: str) -> str:
+    """The part of a failed oracle's stderr that says what went wrong.
+
+    Truncating to the first 200 characters keeps the head of a traceback —
+    "Traceback (most recent call last): File ..., line 291, in <module>" — and
+    throws away the exception itself, which is the only line that matters. It
+    cost three rounds of guessing at a real failure before anyone saw the
+    message.
+
+    A traceback puts the exception LAST, so read from the end. The final line
+    is kept whole and the frame above it added only if there is room, since a
+    long path should not push out the reason.
+    """
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    if not lines:
+        return "no output on stderr"
+    tail = lines[-1]
+    if len(lines) > 1 and len(tail) < 160:
+        # The frame naming the function is useful context when the message is
+        # terse ("KeyError: 'Balance'" says nothing about where).
+        return f"{tail} (at {lines[-2][:120]})"
+    return tail[:400]
+
+
 def _oracle_value(
     item: dict[str, Any], *, cwd: str | None, timeout: float,
     case_id: str | None = None,
@@ -68,7 +92,7 @@ def _oracle_value(
     if completed.returncode != 0:
         return None, (
             f"Oracle command exited {completed.returncode}: "
-            f"{completed.stderr.strip()[:200]}"
+            f"{_failure_line(completed.stderr)}"
         )
     text = completed.stdout.strip()
     try:

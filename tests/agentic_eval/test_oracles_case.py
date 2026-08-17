@@ -248,3 +248,127 @@ def test_the_oracle_script_refuses_to_guess_a_case():
     assert result.returncode != 0
     assert "--case" in result.stderr
     assert not result.stdout.strip(), "a refusal must not also print a value"
+
+
+def test_a_failing_oracle_reports_the_exception_not_the_traceback_header():
+    """The first 200 characters of a traceback are the least useful 200.
+
+    Real report from a private environment, in full:
+
+        Oracle command exited 1: Traceback (most recent call last):
+          File ".../case_facts.py", line 291, in <module>
+            raise SystemExit(main())
+
+    The exception — which named the missing file — fell off the end. It took
+    three rounds of guessing before anyone saw the actual cause.
+    """
+    from agentic_eval.content.oracles import _failure_line
+
+    traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "/Users/x/_proj/AgenticEval-main/experiments/oracles/'
+        'case_facts.py", line 291, in <module>\n'
+        "    raise SystemExit(main())\n"
+        '  File "case_facts.py", line 122, in _cards\n'
+        '    return _rows(_table(case, "crossbu_cards.csv"))\n'
+        "FileNotFoundError: case '1059922019' has none of: crossbu_cards.csv"
+    )
+
+    line = _failure_line(traceback)
+
+    assert "FileNotFoundError" in line and "crossbu_cards.csv" in line
+    assert "Traceback (most recent call last)" not in line
+
+
+def test_a_terse_exception_keeps_the_frame_that_locates_it():
+    """"KeyError: 'Balance'" says nothing about where."""
+    from agentic_eval.content.oracles import _failure_line
+
+    line = _failure_line(
+        "Traceback:\n  File 'x.py', line 9, in commercial_card_balance\n"
+        "KeyError: 'Balance'"
+    )
+    assert "KeyError: 'Balance'" in line and "commercial_card_balance" in line
+
+
+def test_empty_stderr_says_so_rather_than_reporting_nothing():
+    from agentic_eval.content.oracles import _failure_line
+
+    assert _failure_line("") == "no output on stderr"
+    assert _failure_line("   \n\n") == "no output on stderr"
+
+
+def test_the_oracle_script_names_the_files_it_did_not_find(tmp_path):
+    """A case whose CSVs are named differently is a one-line diagnosis, not a
+    guess: say what was wanted AND what is actually there."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    case = tmp_path / "1059922019"
+    case.mkdir()
+    (case / "crossbu_data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+
+    script = Path("experiments/oracles/case_facts.py").resolve()
+    result = subprocess.run(
+        [sys.executable, str(script), "--case", "1059922019",
+         "--fact", "commercial_card_count", "--data-root", str(tmp_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "crossbu_cards.csv" in result.stderr        # what it wanted
+    assert "crossbu_data.csv" in result.stderr         # what is there
+    assert not result.stdout.strip()
+
+
+def test_every_fact_takes_the_same_two_parameters():
+    """A dispatch table whose entries disagree about their own signature.
+
+    Six of these named the second parameter `_p` and one named it
+    `profile_dir`, so calling the table BY KEYWORD worked for exactly one fact
+    and raised "unexpected keyword argument 'profile_dir'" for the rest —
+    including both of b1's. Reported from a private environment as an
+    unexplained b1 failure, and the traceback that would have named it was
+    truncated away before anyone saw it.
+
+    Positional calls hid the disagreement completely, which is why it survived.
+    """
+    import importlib.util
+    import inspect
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "case_facts", Path("experiments/oracles/case_facts.py").resolve())
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    signatures = {
+        name: list(inspect.signature(fn).parameters)
+        for name, fn in module.FACTS.items()
+    }
+    assert set(map(tuple, signatures.values())) == {("case", "profile_dir")}, (
+        f"facts disagree about their parameters: {signatures}"
+    )
+
+
+def test_every_fact_is_callable_by_keyword(tmp_path):
+    """The call style that broke. Reaching the body at all is the assertion —
+    a missing CSV raises later, and from inside the fact, not at the call."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "case_facts", Path("experiments/oracles/case_facts.py").resolve())
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for name, fact in module.FACTS.items():
+        try:
+            fact(tmp_path, profile_dir=tmp_path)
+        except TypeError as error:
+            if "keyword argument" in str(error):
+                raise AssertionError(f"{name} rejects a keyword call: {error}")
+        except Exception:
+            pass          # data missing is fine; the CALL is what is tested

@@ -241,18 +241,29 @@ def transactions_last_month(case: Path) -> dict:
     }
 
 
+# Every entry takes the SAME two parameters, under the same names. Six of
+# these once named the second `_p` and one named it `profile_dir`, so calling
+# the table by keyword worked for exactly one fact and raised
+# "unexpected keyword argument 'profile_dir'" for the rest — including both of
+# b1's. A dispatch table whose entries disagree about their own signature is a
+# trap for the next caller, so they agree.
 FACTS = {
-    "has_payment_returns": lambda case, _p: has_payment_returns(case),
-    "payment_return_count": lambda case, _p: payment_return_count(case),
-    "commercial_card_count": lambda case, _p: commercial_card_count(case),
-    "commercial_card_balance": lambda case, _p: commercial_card_balance(case),
-    "latest_fico_score": lambda case, _p: latest_fico_score(case),
-    "has_external_delinquency_features": (
+    "has_payment_returns":
+        lambda case, profile_dir: has_payment_returns(case),
+    "payment_return_count":
+        lambda case, profile_dir: payment_return_count(case),
+    "commercial_card_count":
+        lambda case, profile_dir: commercial_card_count(case),
+    "commercial_card_balance":
+        lambda case, profile_dir: commercial_card_balance(case),
+    "latest_fico_score":
+        lambda case, profile_dir: latest_fico_score(case),
+    "has_external_delinquency_features":
         lambda case, profile_dir: has_external_delinquency_features(
             case, profile_dir=profile_dir,
-        )
-    ),
-    "transactions_last_month": lambda case, _p: transactions_last_month(case),
+        ),
+    "transactions_last_month":
+        lambda case, profile_dir: transactions_last_month(case),
 }
 
 
@@ -282,7 +293,21 @@ def main() -> int:
     if not case_dir.is_dir():
         print(f"case directory not found: {case_dir}", file=sys.stderr)
         return 2
-    result = FACTS[args.fact](case_dir, Path(args.profile_dir).expanduser())
+    try:
+        result = FACTS[args.fact](case_dir, Path(args.profile_dir).expanduser())
+    except (FileNotFoundError, KeyError, ValueError) as error:
+        # A traceback is the worst thing to hand the evaluator: it records the
+        # first 200 characters of stderr, which for a traceback is the header
+        # and a line number, and the exception — the only informative part —
+        # falls off the end. Say what is missing, and list what IS there, so
+        # a case whose files are named differently is a one-line diagnosis
+        # rather than a guess.
+        detail = error.args[0] if error.args else error.__class__.__name__
+        if isinstance(error, KeyError):
+            detail = f"no column {error.args[0]!r} in this case's table"
+        present = ", ".join(sorted(path.name for path in case_dir.iterdir()))
+        print(f"{detail} — {case_dir.name} has: {present}", file=sys.stderr)
+        return 2
     print(json.dumps(result, default=str))
     return 0
 
